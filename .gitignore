@@ -1,0 +1,21 @@
+# runtime output and local config (never commit)
+state/
+out/
+lead-engine-demo/
+lead-engine.toml
+voice.toml
+/*.csv
+.env
+*.env
+!.env.example
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
+.DS_Store
