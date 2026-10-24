@@ -1,0 +1,71 @@
+# Voice rules for openers. Copy to voice.toml (`lead-engine init` does it) and make it sound like you.
+# Every opener must pass all of these before a lead can be campaign-ready. The email template greets the
+# person by first name; the opener is the line that comes after the greeting.
+
+max_characters = 200
+max_sentences = 2
+max_grade = 9.0              # Flesch-Kincaid grade level
+ban_em_dash = true
+mention_first_name = false   # the greeting already uses it
+distinct_opening_words = 3   # an opener may not start with the same 3 words as one of...
+distinct_window = 5          # ...the 5 most recent openers
+
+banned_phrases = [
+  "I hope this email finds you well",
+  "I came across",
+  "I was impressed",
+  "I noticed that",
+  "just wanted to",
+  "touch base",
+  "quick question",
+  "game-changer",
+  "synergy",
+  "truly inspiring",
+  "amazing",
+  "passionate about",
+]
+
+# Examples of the voice, shown to the model writer (writer.mode = "claude"). Templates don't use them.
+examples = [
+  "Keeping restaurant books straight for that long is a real run in a business with thin margins.",
+  "Adding gutter work the same spring you opened a second crew is a busy way to grow.",
+  "Getting voted best in town is the kind of thing people actually check before they call.",
+]
+
+# Templates for the default writer, one list per fact kind. Placeholders: {company}, {city}, and the
+# fact's own values: {year} (founded), {place} and {year} (serving), {specialty} (specialty), {award} and {year}
+# (award). Add _cap to capitalize the first letter, as in {specialty_cap}. A template may only restate
+# its fact: any number or name it adds that the evidence doesn't contain fails the check.
+[templates]
+founded = [
+  "Running {company} since {year} is a long stretch for any small business.",
+  "{company} has been at it since {year}, and that kind of staying power is rare.",
+  "Keeping a small business going since {year} takes real work.",
+  "Your firm dates back to {year}.",
+  "Since {year}, {company} has been in business.",
+  "The business started in {year}.",
+]
+serving = [
+  "Your firm has served {place} since {year}.",
+  "Since {year}, you have served {place} at your firm.",
+  "The work you do has served {place} since {year}.",
+  "You have served {place} in your work since {year}.",
+  "For {place}, your firm has been of service since {year}.",
+  "In {place}, you have been of service since {year}.",
+]
+specialty = [
+  "Your firm has a focus on {specialty} in the work it does.",
+  "The work you do at your firm is focused on {specialty}.",
+  "You keep the focus of your work on {specialty} at your firm.",
+  "At your firm, the work is built around a focus on {specialty}.",
+  "When it comes to the work your firm does, you focus on {specialty}.",
+  "For your firm, {specialty} is the focus of the work you do.",
+]
+award = [
+  "Your firm won {award} in {year}.",
+  "In {year}, your firm won {award}.",
+  "The {award} award went to your firm in {year}.",
+  "That {award} win came in {year}.",
+  "You won {award} for your firm in {year}.",
+  "For your firm, {year} brought a {award} win.",
+]

@@ -1,0 +1,8 @@
+# crontab -e, then add these lines (edit the paths). cron has a minimal PATH and no shell profile:
+# give uv's full path (`which uv`) and load your .env.
+# One run every 15 minutes: discover, verify, write, gate, hand off.
+*/15 * * * * cd /path/to/lead-engine && set -a && . ./.env && set +a && /path/to/uv run lead-engine run --quiet >> state/cron.log 2>&1
+# Re-check the stranded pile once a week (Monday 07:00).
+0 7 * * 1 cd /path/to/lead-engine && set -a && . ./.env && set +a && /path/to/uv run lead-engine backlog >> state/cron.log 2>&1
+# Audit warmup settings every morning; leave output for cron mail (requires a configured mail service).
+30 6 * * * cd /path/to/lead-engine && set -a && . ./.env && set +a && /path/to/uv run lead-engine warmup --strict
