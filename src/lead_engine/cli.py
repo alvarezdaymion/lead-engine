@@ -42,12 +42,14 @@ def build_discovery(cfg: config_mod.Config, suppressions: Suppressions) -> Any:
     if d["source"] == "csv":
         path = cfg.path(d["csv_path"])
         return Discovery(d, None, suppressions, lambda: dt.datetime.now(dt.UTC), csv_rows=lambda: read_candidates(path))
+    if not d["allow_paid"]:
+        return None
     if not d["markets"] or not d["keywords"]:
         def missing(store: Store) -> dict[str, Any]:
             raise RuntimeError("set discovery.markets and discovery.keywords in lead-engine.toml")
         return missing
     try:
-        source = PlacesSource(max_pages=int(d["pages_per_search"]), region_code=str(d["region_code"]))
+        source = PlacesSource(max_pages=int(d["pages_per_search"]), region_code=str(d["region_code"]), allow_paid=True)
     except RuntimeError as e:
         message = str(e)
 
@@ -113,6 +115,8 @@ def cmd_check(args: argparse.Namespace) -> int:
         print("Discovery: Google Places, %d market(s) x %d keyword(s) = %d searches; %s"
               % (len(d["markets"]), len(d["keywords"]), len(d["markets"]) * len(d["keywords"]),
                  _env("GOOGLE_PLACES_API_KEY")))
+        print("Paid discovery: %s" % ("enabled" if d["allow_paid"] else
+                                      "disabled; set discovery.allow_paid = true to authorize billed searches"))
     else:
         path = cfg.path(d["csv_path"])
         print("Discovery: CSV %s (%s)" % (path, "found" if path.exists() else "missing"))

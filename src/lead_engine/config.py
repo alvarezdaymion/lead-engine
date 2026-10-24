@@ -13,6 +13,7 @@ from .verify import DEFAULT_ROLES
 DEFAULTS: dict[str, Any] = {
     "discovery": {
         "source": "places",              # places | csv
+        "allow_paid": False,             # explicit permission for billable Places searches
         "csv_path": "import.csv",
         "markets": [],
         "keywords": [],
@@ -119,6 +120,8 @@ def validate(d: dict[str, Any]) -> None:
         raise ValueError("unknown section(s): %s" % ", ".join(sorted(unknown)))
     if d["discovery"]["source"] not in ("places", "csv"):
         raise ValueError("discovery.source must be places or csv")
+    if type(d["discovery"]["allow_paid"]) is not bool:
+        raise ValueError("discovery.allow_paid must be true or false")
     if d["writer"]["mode"] not in ("template", "claude"):
         raise ValueError("writer.mode must be template or claude")
     if d["handoff"]["mode"] not in ("off", "dry-run", "live"):

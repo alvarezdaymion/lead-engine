@@ -54,6 +54,9 @@ def test_a_recent_opening_pushes_the_writer_to_another_template():
 
 
 @pytest.mark.parametrize("kind,sentence", [("specialty", "We specialize in payroll."),
+    ("specialty", "We specialize in tax preparation."),
+    ("specialty", "We specialize in financial reporting."),
+    ("specialty", "We specialize in bookkeeping for restaurants and cafes."),
     ("founded", "Founded in 2012."), ("years", "We have 15 years of experience."),
     ("award", "Voted Best Bookkeeper in 2025.")])
 def test_default_templates_handle_consecutive_leads_with_the_same_fact(tmp_path, kind, sentence):

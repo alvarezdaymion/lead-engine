@@ -3,7 +3,7 @@
 import datetime as dt
 
 import pytest
-from helpers import Clock, html_transport
+from helpers import Clock, add_site, html_transport, make_engine
 
 from lead_engine import verify
 from lead_engine.config import DEFAULTS
@@ -27,6 +27,13 @@ def run(host, transport=None, company="Shop", settings=SETTINGS):
                 monotonic=clock.monotonic)
     lead = {"id": 1, "company": company, "website": "https://%s/" % host, "market": "Cedar Hollow, OR"}
     return research(lead, f, settings, TODAY)
+
+
+def process_local_site(tmp_path, body):
+    engine = make_engine(tmp_path, Clock(), transport=html_transport({"https://shop.example.com/": body}))
+    lead_id = add_site(engine.store, "shop.example.com", "Shop")
+    engine.tick(discover=False, handoff=False)
+    return engine, engine.store.get(lead_id)
 
 
 @pytest.mark.parametrize("sentence,name,role", [
@@ -188,6 +195,76 @@ def test_staff_address_is_not_bound_to_the_owner_in_the_same_paragraph():
     assert find_email([p], person(), "shop.example.com")[0] is None
 
 
+@pytest.mark.parametrize("contact", [
+    "<p>Pat Example, Owner; payroll clerk Lee answers at lee.s@example.com.</p>",
+    "<p>Pat Example, Owner, payroll clerk Lee answers at lee.s@example.com.</p>",
+    "<p>Pat Example, Owner, payroll clerk Pat answers at pat@example.com.</p>",
+    "<p>Pat Example, Owner.</p><p>Pat Sample handles payroll: pat@example.com.</p>",
+    '<p>Pat Example, Owner.</p><p>Pat Sample handles payroll: '
+    '<a href="mailto:pat@example.com">Email Pat Sample</a></p>',
+])
+def test_conflicting_staff_contacts_do_not_reach_ready(tmp_path, contact):
+    _, lead = process_local_site(tmp_path, contact + "<p>Founded in 2012.</p>")
+    assert (lead["stage"], lead["reason"]) == ("dropped", "no_direct_email")
+
+
+def test_separate_staff_contact_does_not_hide_the_owners_contact(tmp_path):
+    body = ("<p>Pat Example, Owner, pat@example.com; payroll clerk Lee answers at lee.s@example.com.</p>"
+            "<p>Founded in 2012.</p>")
+    _, lead = process_local_site(tmp_path, body)
+    assert lead["stage"] == "ready" and lead["data"]["email"]["address"] == "pat@example.com"
+
+
+@pytest.mark.parametrize("retirement", ["Pat Example retired in 2020 and no longer works here.",
+                                       "Pat Example has stepped down."])
+def test_visible_retirement_overrides_schema_founder(tmp_path, retirement):
+    body = ('<script type="application/ld+json">{"@type":"LocalBusiness",'
+            '"founder":{"@type":"Person","name":"Pat Example"}}</script>'
+            '<p>%s</p><p>pat@example.com</p><p>Founded in 2012.</p>' % retirement)
+    _, lead = process_local_site(tmp_path, body)
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
+
+
+@pytest.mark.parametrize("owner", ["<p>Pat Example, Owner.</p>", "<p>Pat Example</p><p>Owner</p>"])
+@pytest.mark.parametrize("adjacent", ["Our assistant handles bookings.", "Our previous office is closed.",
+                                     "Lee Sample has retired."])
+def test_unrelated_adjacent_text_does_not_hide_the_current_owner(tmp_path, owner, adjacent):
+    _, lead = process_local_site(tmp_path, owner + "<p>%s</p><p>pat@example.com</p><p>Founded in 2012.</p>" % adjacent)
+    assert lead["stage"] == "ready" and lead["data"]["person"]["full_name"] == "Pat Example"
+
+
+@pytest.mark.parametrize("owner", ["<p>Pat Example, Owner; our assistant handles bookings.</p>",
+                                  "<p>Pat Example, Owner.</p><p>Retired clients are welcome.</p>"])
+def test_unrelated_status_clauses_do_not_disqualify_the_owner(tmp_path, owner):
+    _, lead = process_local_site(tmp_path, owner + "<p>pat@example.com</p><p>Founded in 2012.</p>")
+    assert lead["stage"] == "ready" and lead["data"]["person"]["full_name"] == "Pat Example"
+
+
+def test_departure_on_another_page_excludes_only_the_departed_founder():
+    home = page("Pat Example, Owner.", jsonld=[{"@type": "LocalBusiness", "founder": {
+        "@type": "Person", "name": "Lee Sample"}}])
+    history = page("Lee Sample retired in 2020 and no longer works here.", url="https://shop.example.com/history")
+    people = find_people([home, history], SETTINGS["roles"], "Shop")
+    assert [person.full_name for person in people] == ["Pat Example"]
+
+
+@pytest.mark.parametrize("claim", ["Our supplier was founded in 2012.", "Other Shop was founded in 2012.",
+    "Pat Example founded Other Shop in 2012.", "Our client has 15 years of experience.",
+    "Our vendor is specializing in payroll.", "Our supplier was voted Best Shop in 2025."])
+def test_third_party_facts_do_not_become_business_openers(tmp_path, claim):
+    _, lead = process_local_site(tmp_path, "<p>Pat Example, Owner.</p><p>pat@example.com</p><p>%s</p>" % claim)
+    assert (lead["stage"], lead["reason"]) == ("dropped", "no_opener_facts")
+
+
+@pytest.mark.parametrize("claim", ["Shop was founded in 2012.", "Our firm was founded in 2012.",
+                                  "Pat Example founded Shop in 2012."])
+def test_business_founding_claims_keep_their_proven_subject(tmp_path, claim):
+    _, lead = process_local_site(tmp_path, "<p>Pat Example, Owner.</p><p>pat@example.com</p><p>%s</p>" % claim)
+    assert lead["stage"] == "ready"
+    founding = next(f for f in lead["data"]["facts"] if f["kind"] == "founded")
+    assert founding["subject"] == "Shop"
+
+
 def test_absent_opener_facts_wait_for_an_unreadable_page(tmp_path, clock):
     from helpers import add_site, make_engine
     transport = html_transport({SITE + "/": '<a href="/about">About</a><p>Pat Example, Owner.</p>'
@@ -205,7 +282,7 @@ def test_opener_facts_and_their_values():
             "We specialize in bookkeeping for restaurants and cafes, so you get someone who knows the trade.\n"
             "Voted Best Bookkeeper in Cedar Hollow 2025.\n"
             "Since 2020 prices have gone up.\nEstablished in 2031.")
-    facts = opener_facts([page(text)], TODAY)
+    facts = opener_facts([page(text)], TODAY, company="Harbor Ledger Co.")
     values = [(f["kind"], f["value"]) for f in facts]
     assert ("founded", {"year": "2009"}) in values and ("founded", {"year": "2014"}) in values
     assert ("years", {"years": "15"}) in values

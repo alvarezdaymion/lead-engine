@@ -1,6 +1,6 @@
 # Setting up lead-engine (for a coding agent)
 
-You are helping the owner of a small business set up lead-engine to find and qualify other businesses as prospects. Work through the steps in order, ask before each choice that is theirs to make, and run the check at the end of each step. Never write credentials into `lead-engine.toml`, into the repo or into chat; they go in `.env` (git-ignored) or the environment of the scheduler. Never switch the hand-off to live, and never send a seed test, unless the owner explicitly asks.
+You are helping the owner of a small business set up lead-engine to find and qualify other businesses as prospects. Work through the steps in order, ask before each choice that is theirs to make, and run the check at the end of each step. Never write credentials into `lead-engine.toml`, into the repo or into chat; they go in `.env` (git-ignored) or the environment of the scheduler. Never enable paid discovery, switch the hand-off to live or send a seed test unless the owner explicitly asks.
 
 ## 1. Run the demo
 
@@ -21,13 +21,13 @@ Run `uv run lead-engine init` to create `lead-engine.toml`, `voice.toml` and `su
 3. **Decision-maker roles.** The default list runs from owner and founder down to general manager. Remove roles the owner doesn't want to email.
 4. **Fit.** `require_any`: words a fitting business's site should contain. `exclude_any`: signs of a chain or a poor fit (the defaults catch franchise pages).
 
-Verification and the gate use the same role list. Nickname variants may share one person record only when each spelling has its own website evidence. Negated roles do not qualify. Website credentials, query strings and fragments are removed from stored lead URLs and from exports and platform payloads.
+Verification and the gate use the same role list. Nickname variants may share one person record only when each spelling has its own website evidence. Negated roles do not qualify. Person-specific retirement or departure evidence overrides schema roles across pages; unrelated adjacent staff descriptions do not disqualify an owner. Contact clauses that identify a different staff member cannot supply the owner's address. Opener facts must concern the target business, with their subjects checked against the full stored page. Website credentials, query strings and fragments are removed from stored lead URLs and from exports and platform payloads.
 
 Done when `uv run --env-file .env lead-engine check` prints "Config OK" and the number of searches you agreed.
 
 ## 3. Voice and suppressions
 
-- **voice.toml.** Ask for phrases they never want in an email, the longest opener they would send, and a reading level. Rewrite the `[templates]` in their words; a template may only restate its fact, so no added numbers, names or claims. Keep more distinct openings per fact kind than `distinct_window`. If they plan to use the model writer, replace `examples` with lines they have actually written.
+- **voice.toml.** Ask for phrases they never want in an email, the longest opener they would send, and a reading level. Rewrite the `[templates]` in their words; a template may only restate its fact, so no added numbers, names or claims. Keep more distinct openings per fact kind than `distinct_window` that pass all voice rules with ordinary fact values, including the reading-grade limit. If they plan to use the model writer, replace `examples` with lines they have actually written.
 - **suppressions.csv.** Export unsubscribes, bounces and do-not-contact entries from their email platform and CRM into the `email` and `domain` columns. A missing or malformed file stops processing. A header-only CSV is the explicit empty list. Live hand-off reloads it before every batch, so keep it current.
 - **User agent.** Set `[fetch] user_agent` to name their business with a contact URL, so site owners can see who is reading their pages.
 
@@ -35,10 +35,10 @@ Done when `uv run --env-file .env lead-engine check` shows the voice file as OK 
 
 ## 4. Connect discovery
 
-- **Google Places** (`[discovery] source = "places"`): in a Google Cloud project, enable the Places API (New), create an API key restricted to it, and set a budget alert. Put it in `GOOGLE_PLACES_API_KEY`. Tell the owner that each search is billed at the Text Search Enterprise rate because it asks for websites, and that `cells_per_tick` times `pages_per_search` caps the searches per run.
+- **Google Places** (`[discovery] source = "places"`): in a Google Cloud project, enable the Places API (New), create an API key restricted to it, and set a budget alert. Put it in `GOOGLE_PLACES_API_KEY`. Tell the owner that each search is billed at the Text Search Enterprise rate because it asks for websites, and that `cells_per_tick` times `pages_per_search` caps the searches per run. Leave `allow_paid = false` until they explicitly authorize that cost, then set `[discovery] allow_paid = true`. A key alone does not enable billing, and hand-off dry-run mode does not prevent discovery charges.
 - **CSV** (`source = "csv"`): if they already have a list, put it in `import.csv` with the columns from `examples/import.csv`.
 
-Done when `uv run --env-file .env lead-engine check` shows "GOOGLE_PLACES_API_KEY set" or the CSV as found.
+Done when `uv run --env-file .env lead-engine check` shows "GOOGLE_PLACES_API_KEY set" and "Paid discovery: enabled" after approval, or the CSV as found. CSV import needs no paid-discovery opt-in.
 
 ## 5. First run, with the hand-off as a dry run
 
@@ -71,6 +71,8 @@ An uncertain POST leaves leads ready but blocks automatic resubmission. `status`
 
 - **Warmup audit:** add the `accounts:read` scope and run `uv run --env-file .env lead-engine warmup`. Go through every flagged inbox with the owner and change settings in Instantly yourself only if they ask. Adjust `[warmup]` ranges if their provider recommends different values.
 - **Seed test:** ask for two or more mailboxes they own on different providers (for example one Gmail and one Outlook), create IMAP app passwords, add a `[[placement.seeds]]` block per mailbox with the inbox and spam folder names, and put the credentials in the env vars it names. The seed test lists the sending inboxes (`accounts:read`) and sends through the test-email endpoint (`emails:create`), so the key needs both scopes. Set `[placement] body_file` to their real first email. `uv run --env-file .env lead-engine placement send` shows how many emails would go out. Run it with `--send` only when the owner says to, wait about five minutes, then run `uv run --env-file .env lead-engine placement read` and `uv run --env-file .env lead-engine placement report`. Benching a domain is the owner's decision, made in Instantly.
+
+Seed address identifiers are stripped of surrounding whitespace and lowercased for sends, IMAP lookups and placement results.
 
 If a seed send is interrupted, use `uv run --env-file .env lead-engine placement send --send --run out/placement/run-seed-TOKEN.json` with its saved filename. The command checks that senders, seeds, subject and body still match. Accepted and unresolved entries are skipped; only pending entries are sent. A new run is blocked until the earlier run is complete. Investigate unresolved entries in the platform and seed mailboxes before any manual correction; do not reset them to pending without proving no send occurred.
 

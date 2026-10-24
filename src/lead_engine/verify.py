@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
-from .evidence import Page, schema_people, schema_quote, sentences, supported
+from .evidence import Page, normalize, schema_people, schema_quote, sentences, supported
 from .fetch import Disallowed, Fetcher, FetchError, OffsiteRedirect, host_of
 from .html import EMAIL_RE
 from .http import safe_url
@@ -144,11 +144,60 @@ def _person_fact(name: str, role: str, page: Page, quote: str, method: str, role
     return _fact("decision_maker", value, page, quote, method)
 
 
+def _excluded_people(pages: list[Page], facts: list[dict[str, Any]], negative: re.Pattern[str],
+                     role_rx: str) -> set[tuple[str, str]]:
+    """Link disqualifying roles and statuses to names, including separate team-card lines."""
+    known = {f["value"]["full_name"]: name_key(f["value"]["first_name"], f["value"]["last_name"]) for f in facts}
+    role_only = re.compile(rf"\b{role_rx}\b", re.I)
+    name_line = re.compile(rf"^{_NAME}$")
+    status_tail = re.compile(rf"^(?:[.!?)]|$|(?:{role_rx}|in|from|as|after|since|to|the|an?|our|"
+                             r"works|employed|with|here|for)\b)", re.I)
+    gap = re.compile(rf"(?:[^\w]|{role_rx}|\b(?:is|was|has|have|had|been|now|the|our|an?|and|as|of|to|by|"
+                     r"served|serves|works|worked|became)\b)*", re.I)
+
+    def mentions(text: str) -> list[tuple[int, int, tuple[str, str]]]:
+        out = []
+        for match in re.finditer(_NAME, text):
+            name = _clean_name(match.group(0), set())
+            if name:
+                out.append((match.start(), match.end(), name_key(*split_name(name))))
+        for name, key in known.items():
+            out.extend((m.start(), m.end(), key) for m in re.finditer(r"\b%s\b" % re.escape(name), text, re.I))
+        return out
+
+    excluded = set()
+    for page in pages:
+        lines = page.lines
+        for i, line in enumerate(lines):
+            previous = ""
+            for clause in sentences(line.replace(";", "\n")):
+                named = mentions(clause)
+                for marker in negative.finditer(clause):
+                    if named:
+                        start, end, key = min(named, key=lambda n: max(n[0] - marker.end(), marker.start() - n[1], 0))
+                        between = clause[end:marker.start()] if end <= marker.start() else clause[marker.end():start]
+                        if gap.fullmatch(between):
+                            excluded.add(key)
+                    elif marker.start() == 0 and status_tail.match(clause[marker.end():].lstrip()):
+                        context = previous or (lines[i - 1] if i else "")
+                        if not mentions(context) and role_only.search(context) and i > 1:
+                            context = lines[i - 2]
+                        linked = mentions(context)
+                        if not linked and i + 1 < len(lines) and name_line.fullmatch(lines[i + 1]):
+                            linked = mentions(lines[i + 1])
+                        keys = {n[2] for n in linked}
+                        if len(keys) == 1:
+                            excluded.update(keys)
+                previous = clause
+    return excluded
+
+
 def find_people(pages: list[Page], roles: list[str], company: str) -> list[Person]:
     role_rx = _role_regex(roles)
     verbs = "|".join(re.escape(v) for v in sorted(VERB_ROLE, key=len, reverse=True))
     negated = re.compile(rf"\b(?:not|never|no|isn['\u2019]t|wasn['\u2019]t)\s+"
                          rf"(?:(?:the|an?|our|your|its|current|actual)\s+)*(?:{role_rx}|{verbs})\b", re.I)
+    negative = re.compile(NON_CURRENT.pattern + "|" + negated.pattern, re.I)
 
     def rejected_context(text: str) -> bool:
         return bool(NON_CURRENT.search(text) or negated.search(text))
@@ -168,11 +217,7 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
             if name and role and role_only.search(role) and not rejected_context(role):
                 found.append(_person_fact(name, role, page, schema_quote(prop, node), "schema.org", role_from))
         lines = page.lines
-        current_text = "\n".join(line for i, line in enumerate(lines)
-                                 if not rejected_context(" ".join(lines[max(0, i - 1):i + 2])))
-        for sentence in sentences(current_text):
-            if rejected_context(sentence):
-                continue
+        for sentence in sentences(page.text):
             for rx in patterns:
                 for m in rx.finditer(sentence):
                     name = _clean_name(m.group("name"), company_tokens)
@@ -186,7 +231,7 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
         for i, line in enumerate(lines):
             if len(line.split()) > 8 or not role_only.search(line):
                 continue
-            if rejected_context(" ".join(lines[max(0, i - 1):i + 2])):
+            if rejected_context(line):
                 continue
             role = role_only.search(line).group(0)
             pair = None
@@ -198,10 +243,13 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
                 name = _clean_name(pair[0], company_tokens)
                 if name:
                     found.append(_person_fact(name, role, page, pair[1], "text", "text"))
+    excluded = _excluded_people(pages, found, negative, role_rx)
     people: dict[tuple[str, str], Person] = {}
     for f in found:
         v = f["value"]
         key = name_key(v["first_name"], v["last_name"])
+        if key in excluded:
+            continue
         p = people.get(key)
         rank = _rank(v["role"])
         if p is None:
@@ -251,6 +299,26 @@ def _beside_person(context: str, person: Person, others: list[Person]) -> bool:
     return True
 
 
+def _contact_conflicts(context: str, person: Person) -> bool:
+    text = EMAIL_RE.sub("", context)
+    key = name_key(person.first_name, person.last_name)
+    for match in re.finditer(_NAME, text):
+        name = _clean_name(match.group(0), set())
+        if name and name_key(*split_name(name)) != key:
+            return True
+    for match in re.finditer(r"(?i:\b(?:payroll (?:clerk|specialist)|assistant|employee|staff member|"
+                             rf"receptionist)\s+)(?P<name>{_NAME}|{_WORD})\b", text):
+        name = _clean_name(match.group("name"), set())
+        if not name or name_key(*split_name(name)) != key:
+            return True
+    return False
+
+
+def _contact_text(context: str, address: str) -> str:
+    clauses = re.split(r";|(?<=[.!?])\s+", context)
+    return next((part.strip() for part in clauses if address.lower() in part.lower()), context)
+
+
 def find_email(pages: list[Page], person: Person, host: str, allow_free_mail: bool = True,
                others: list[Person] | None = None) -> tuple[dict[str, Any] | None, list[str]]:
     wanted = local_parts(person.first_name, person.last_name)
@@ -259,6 +327,7 @@ def find_email(pages: list[Page], person: Person, host: str, allow_free_mail: bo
     rejected: list[str] = []
     for page in pages:
         for address, context, method in page.emails:
+            context = _contact_text(context, address)
             local, _, domain = address.partition("@")
             base = local.split("+", 1)[0]
             matches_name = base in wanted
@@ -269,6 +338,8 @@ def find_email(pages: list[Page], person: Person, host: str, allow_free_mail: bo
                 rejected.append("%s is a shared inbox" % address)
             elif base in theirs:
                 rejected.append("%s belongs to %s" % (address, theirs[base]))
+            elif _contact_conflicts(context, person):
+                rejected.append("%s has conflicting staff context" % address)
             elif not on_site and not (free and allow_free_mail):
                 rejected.append("%s is not on the business's domain" % address)
             elif free and not beside:
@@ -312,7 +383,31 @@ def _phrase(raw: str, limit: int = 60) -> str:
     return text.rstrip(" ,;:-")
 
 
-def opener_facts(pages: list[Page], today: dt.date | None = None) -> list[dict[str, Any]]:
+def _self_subject(text: str, company: str) -> bool:
+    text = normalize(text).strip(" ,:")
+    if not text or text == "with":
+        return True
+    subjects = r"we|i|(?:our|the|this)\s+(?:company|firm|business|shop|practice|team|doors)"
+    if company:
+        subjects += "|" + re.escape(normalize(company))
+    return bool(re.fullmatch(rf"(?:{subjects})(?:\s+(?:is|are|was|were|has|have|been|in))*", text))
+
+
+def _business_fact(sentence: str, match: re.Match[str], kind: str, company: str) -> bool:
+    prefix = sentence[:match.start()].strip()
+    if re.search(r"\b(?:supplier|client|customer|vendor|partner|competitor|neighbor|employer)\b", prefix, re.I):
+        return False
+    founding = re.fullmatch(r"(?:founded|established|opened)\s*(.*?)\s+in\s+\d{4}", match.group(), re.I)
+    if kind == "founded" and founding:
+        target = founding.group(1).strip()
+        if target:
+            if not _self_subject(target, company):
+                return False
+            return _self_subject(prefix, company) or bool(re.fullmatch(_NAME, prefix))
+    return _self_subject(prefix, company)
+
+
+def opener_facts(pages: list[Page], today: dt.date | None = None, *, company: str = "") -> list[dict[str, Any]]:
     year_now = (today or dt.date.today()).year
     out: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -320,7 +415,7 @@ def opener_facts(pages: list[Page], today: dt.date | None = None) -> list[dict[s
         for sentence in sentences(page.text):
             for kind, rx in FACT_PATTERNS:
                 m = rx.search(sentence)
-                if not m:
+                if not m or not _business_fact(sentence, m, kind, company):
                     continue
                 raw = m.group(m.lastindex or 1)
                 if kind == "founded" and not 1900 <= int(raw) <= year_now:
@@ -334,7 +429,10 @@ def opener_facts(pages: list[Page], today: dt.date | None = None) -> list[dict[s
                 if key in seen or not all(value.values()):
                     continue
                 seen.add(key)
-                out.append(_fact(kind, value, page, _crop(sentence, m.start(), m.end()), "text"))
+                fact = _fact(kind, value, page, _crop(sentence, m.start(), m.end()), "text")
+                if company:
+                    fact["subject"] = company
+                out.append(fact)
     return out
 
 
@@ -417,7 +515,7 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
     if email is None:
         why = "; ".join(rejected[:3]) or "no address published"
         return unproven("no_direct_email", "%s (%s): %s" % (person.full_name, person.role, why))
-    openers = opener_facts(pages, today)
+    openers = opener_facts(pages, today, company=lead.get("company", ""))
     if failed and not openers:
         raise StepError("could not read %s; deciding opener facts after a retry" % failed[0])
     facts = person.facts + [email] + openers
@@ -434,6 +532,6 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
         "pages": [p.to_dict() for p in pages if p.final_url in cited],
     }
     snapshots = [Page.from_dict(p) for p in data["pages"]]
-    if not all(supported(f, snapshots) for f in facts):
+    if not all(supported(f, snapshots, company=lead.get("company", "")) for f in facts):
         raise StepError("extracted facts do not match the stored page snapshots")
     return Advance("verified", data)

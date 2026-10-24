@@ -84,7 +84,7 @@ def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, dupl
     facts = {f["id"]: f for f in data.get("facts", [])}
     needed = data["person"]["fact_ids"] + [data["email"]["fact_id"]] + data["opener"]["fact_ids"]
     for fid in needed:
-        if fid not in facts or not supported(facts[fid], pages):
+        if fid not in facts or not supported(facts[fid], pages, company=lead["company"]):
             raise StepError("fact %s no longer matches its stored page" % fid)
     person_data = data["person"]
     person_facts = [facts[fid] for fid in person_data["fact_ids"]]

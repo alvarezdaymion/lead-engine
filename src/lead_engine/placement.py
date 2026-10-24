@@ -48,7 +48,8 @@ class Seed:
 
     @classmethod
     def from_config(cls, d: dict[str, Any]) -> Seed:
-        return cls(address=d["address"], host=d["host"], user_env=d["user_env"], password_env=d["password_env"],
+        return cls(address=d["address"].strip().lower(), host=d["host"],
+                   user_env=d["user_env"], password_env=d["password_env"],
                    port=int(d.get("port", 993)), inbox=d.get("inbox", "INBOX"), spam=d.get("spam", "Junk"))
 
 
@@ -60,7 +61,7 @@ def send(client: Any, senders: list[str], seeds: list[Seed], subject: str, html:
          interval: float = 6.5, sleep: Callable[[float], None] = time.sleep, token: str | None = None,
          out_dir: Path | None = None, run: dict[str, Any] | None = None
          ) -> dict[str, Any]:
-    addresses = [s.address.lower() for s in seeds]
+    addresses = [s.address.strip().lower() for s in seeds]
     senders = [s.lower() for s in senders]
     if (not addresses or any(not EMAIL_RE.fullmatch(s) for s in addresses + senders)
             or len(set(senders)) != len(senders) or len(set(addresses)) != len(addresses)
@@ -170,9 +171,11 @@ def imap_connect(seed: Seed) -> Any:
 
 
 def read(run: dict[str, Any], seeds: list[Seed], connect: Callable[[Seed], Any] = imap_connect) -> dict[str, Any]:
+    addresses = [address.strip().lower() for address in run["seeds"]]
     by_seed: dict[str, dict[str, str]] = {}
     for seed in seeds:
-        if seed.address not in run["seeds"]:
+        address = seed.address.strip().lower()
+        if address not in addresses:
             continue
         imap = connect(seed)
         try:
@@ -180,10 +183,10 @@ def read(run: dict[str, Any], seeds: list[Seed], connect: Callable[[Seed], Any] 
             spam = _senders_in(imap, seed.spam, run["token"])
         finally:
             imap.logout()
-        by_seed[seed.address] = {**{s: "inbox" for s in inbox}, **{s: "spam" for s in spam}}
+        by_seed[address] = {**{s: "inbox" for s in inbox}, **{s: "spam" for s in spam}}
     for send_ in run["sends"]:
         send_["placement"] = {seed: by_seed.get(seed, {}).get(send_["sender"].lower(), "missing")
-                              for seed in run["seeds"]}
+                              for seed in addresses}
     run["read"] = True
     return run
 

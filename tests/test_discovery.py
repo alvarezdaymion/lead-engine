@@ -40,7 +40,7 @@ def test_text_search_request_and_parsing():
     fake = FakePlaces([{"places": [place("Harbor Ledger Co.", "https://harbor-ledger.example.com/"),
                                    place("Closed Books", "https://closed.example.com/", "CLOSED_PERMANENTLY"),
                                    place("No Site Studio", None)]}])
-    found = PlacesSource(KEY, transport=fake).search("bookkeeping firm", "Cedar Hollow, OR")
+    found = PlacesSource(KEY, transport=fake, allow_paid=True).search("bookkeeping firm", "Cedar Hollow, OR")
     assert [(c.company, c.website, c.market, c.keyword) for c in found] == [
         ("Harbor Ledger Co.", "https://harbor-ledger.example.com/", "Cedar Hollow, OR", "bookkeeping firm")]
     method, url, headers, body = fake.calls[0]
@@ -49,18 +49,26 @@ def test_text_search_request_and_parsing():
     assert body == {"textQuery": "bookkeeping firm in Cedar Hollow, OR", "pageSize": 20, "regionCode": "US"}
 
 
+def test_places_connector_refuses_paid_calls_without_explicit_permission():
+    fake = FakePlaces([{"places": []}])
+    client = PlacesSource(KEY, transport=fake)
+    with pytest.raises(PermissionError, match="allow_paid"):
+        client.search("bookkeeping firm", "Cedar Hollow, OR")
+    assert fake.calls == []
+
+
 def test_pages_follow_the_next_page_token_up_to_the_limit():
     fake = FakePlaces([{"places": [place("A Co", "https://a.example.com/")], "nextPageToken": "t1"},
                        {"places": [place("B Co", "https://b.example.com/")], "nextPageToken": "t2"},
                        {"places": [place("C Co", "https://c.example.com/")]}])
-    found = PlacesSource(KEY, transport=fake, max_pages=2).search("plumber", "Port Alder, WA")
+    found = PlacesSource(KEY, transport=fake, max_pages=2, allow_paid=True).search("plumber", "Port Alder, WA")
     assert [c.company for c in found] == ["A Co", "B Co"]
     assert fake.calls[1][3]["pageToken"] == "t1" and len(fake.calls) == 2
 
 
 def test_errors_are_raised_without_the_key(monkeypatch):
     with pytest.raises(HttpError) as e:
-        PlacesSource(KEY, transport=FakePlaces([])).search("plumber", "Port Alder, WA")
+        PlacesSource(KEY, transport=FakePlaces([]), allow_paid=True).search("plumber", "Port Alder, WA")
     assert KEY not in str(e.value) and "HTTP 403" in str(e.value)
     monkeypatch.delenv("GOOGLE_PLACES_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="GOOGLE_PLACES_API_KEY"):

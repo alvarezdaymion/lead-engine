@@ -89,6 +89,26 @@ def test_any_spam_copy_benches_the_sender_domain():
     assert placement.report(run)["example.com"]["verdict"] == "bench"
 
 
+@pytest.mark.parametrize("from_config", [False, True])
+def test_mixed_case_seed_identifiers_are_used_consistently(tmp_path, from_config):
+    data = {"address": "Seed-One@Example.org", "host": "imap.example.org",
+            "user_env": "S_USER", "password_env": "S_PASS"}
+    seed = placement.Seed.from_config(data) if from_config else placement.Seed(**data)
+    run = placement.send(FakeClient(), ["sender@example.com"], [seed], "Test", "body",
+                         dry_run=False, out_dir=tmp_path, token="seed-case")
+    box = FakeImap({"INBOX": [("sender@example.com", run["subject"])], "Junk": []})
+    connections = []
+
+    def connect(configured):
+        connections.append(configured)
+        return box
+
+    placement.read(run, [seed], connect=connect)
+    assert len(connections) == 1 and box.closed
+    assert run["sends"][0]["placement"] == {"seed-one@example.org": "inbox"}
+    assert placement.report(run)["example.com"]["verdict"] == "keep"
+
+
 def test_runs_are_saved_and_the_latest_is_found(tmp_path):
     path = placement.save({"token": "seed-1", "sends": []}, tmp_path)
     assert placement.latest(tmp_path) == path

@@ -61,6 +61,18 @@ def test_evidence_that_no_longer_matches_its_page_fails(written):
         run_gate(tampered)
 
 
+def test_opener_fact_subject_must_be_the_gated_business(written):
+    tampered = copy.deepcopy(written)
+    data = tampered["data"]
+    fact = next(f for f in data["facts"] if f["id"] == data["opener"]["fact_ids"][0])
+    quote = "Other Shop was founded in 2009."
+    source = next(p for p in data["pages"] if p["final_url"] == fact["source_url"])
+    source["text"] += "\n" + quote
+    fact.update(quote=quote, subject="Other Shop")
+    with pytest.raises(StepError):
+        run_gate(tampered)
+
+
 def test_gate_rechecks_the_person_address_relationship(written):
     tampered = copy.deepcopy(written)
     data = tampered["data"]

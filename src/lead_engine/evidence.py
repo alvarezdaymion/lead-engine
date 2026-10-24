@@ -92,7 +92,7 @@ def schema_quote(prop: str, person: dict) -> str:
     return "%s: %s" % (prop, json.dumps(keep, sort_keys=True))
 
 
-def supported(fact: dict[str, Any], pages: list[Page]) -> bool:
+def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "") -> bool:
     """Whether a fact is still proven by the stored page it cites."""
     from .html import EMAIL_RE
     from .verify import find_people, opener_facts
@@ -126,8 +126,12 @@ def supported(fact: dict[str, Any], pages: list[Page]) -> bool:
             return quote == "mailto:" + address and any(e == address and m == "mailto" for e, _, m in page.emails)
         return address in {m.group(0).lower() for m in EMAIL_RE.finditer(quote)}
     if kind in ("founded", "years", "specialty", "award") and method == "text":
-        passage = Page(page.url, page.final_url, page.status, True, text=quote)
-        return any(candidate["kind"] == kind and candidate["value"] == value for candidate in opener_facts([passage]))
+        subject = str(fact.get("subject") or "")
+        if company and subject and normalize(company) != normalize(subject):
+            return False
+        return any(candidate["kind"] == kind and candidate["value"] == value
+                   and normalize(candidate["quote"]) == normalize(quote)
+                   for candidate in opener_facts([page], company=company or subject))
     return False
 
 

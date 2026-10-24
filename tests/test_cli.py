@@ -5,7 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from lead_engine import cli
+from lead_engine import cli, http
+from lead_engine import config as config_mod
 from lead_engine.demo import DATA, SiteTransport
 from lead_engine.engine import TickLock
 from lead_engine.fetch import Fetcher
@@ -61,6 +62,39 @@ def test_init_then_check(tmp_path, capsys, monkeypatch):
     assert "Config OK" in out and "GOOGLE_PLACES_API_KEY missing" in out and "Hand-off: dry-run" in out
     (tmp_path / "voice.toml").unlink()
     assert cli.main(["check", "--config", str(config)]) == 1
+
+
+def test_initialized_config_requires_explicit_paid_discovery_permission(tmp_path, monkeypatch):
+    path = tmp_path / "lead-engine.toml"
+    assert cli.main(["init", "--config", str(path)]) == 0
+    monkeypatch.setenv("GOOGLE_PLACES_API_KEY", "synthetic-places-key")
+    calls = []
+
+    def transport(*args):
+        calls.append(args)
+        return 200, b'{"places": []}'
+
+    monkeypatch.setattr(http, "urllib_transport", transport)
+    cfg = config_mod.load(path)
+    engine = cli.build_engine(cfg)
+    try:
+        engine.tick()
+        assert calls == []
+    finally:
+        engine.store.close()
+    cfg.data["discovery"]["allow_paid"] = True
+    enabled = cli.build_engine(cfg)
+    try:
+        enabled.tick()
+        assert len(calls) == cfg["discovery"]["cells_per_tick"]
+    finally:
+        enabled.store.close()
+
+
+@pytest.mark.parametrize("permission", ["true", 1, None])
+def test_paid_discovery_permission_must_be_a_boolean(permission):
+    with pytest.raises(ValueError, match="allow_paid"):
+        config_mod.from_dict({"discovery": {"allow_paid": permission}})
 
 
 def write_config(tmp_path, extra=""):

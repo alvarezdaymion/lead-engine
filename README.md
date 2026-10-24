@@ -8,7 +8,7 @@ Project page: [daymionalvarez.com/portfolio/lead-engine](https://daymionalvarez.
 
 ## How it works
 
-Each run reads the queue from SQLite, searches Google Places for more businesses when the queue runs low, and pushes due leads through four steps. **Verify** reads the homepage and its about, team and contact pages, and looks for a named owner, founder or similar, an address published for that person, and facts for the opener. **Write** fills a template from one quoted fact, or asks a Claude model for a line built only from the cited facts. **Gate** checks the suppression list and duplicates, proves every fact again against the stored page, and applies the voice rules again. **Hand-off** adds the lead to an Instantly campaign, as a dry run by default. Every finished step is checkpointed before the next one starts.
+Each run reads the queue from SQLite, searches Google Places for more businesses when the queue runs low and paid discovery is enabled, and pushes due leads through four steps. **Verify** reads the homepage and its about, team and contact pages, and looks for a named owner, founder or similar, an address published for that person, and facts for the opener. **Write** fills a template from one quoted fact, or asks a Claude model for a line built only from the cited facts. **Gate** checks the suppression list and duplicates, proves every fact again against the stored page, and applies the voice rules again. **Hand-off** adds the lead to an Instantly campaign, as a dry run by default. Every finished step is checkpointed before the next one starts.
 
 ## Quickstart
 
@@ -21,6 +21,8 @@ uv run lead-engine demo        # fictional businesses from local HTML; no keys, 
 ```
 
 To use it on real businesses, run `uv run lead-engine init`, edit `lead-engine.toml` and `voice.toml`, copy `.env.example` to `.env` and fill in the keys, then run `uv run --env-file .env lead-engine check` and `uv run --env-file .env lead-engine run`. Use `--env-file .env` for manual commands that need credentials; the CLI does not load the file itself. Or hand the repo to your coding agent and say "set up lead-engine for my business": [SETUP.md](SETUP.md) is written for it.
+
+Paid discovery starts disabled, even with a key present. To authorize billed Places searches, set `[discovery] allow_paid = true`; `lead-engine check` reports whether it is enabled. CSV import works without this opt-in. Hand-off dry-run mode does not control discovery billing.
 
 The demo requires an empty destination and marks it with `.lead-engine-demo`. To rerun it, use `uv run lead-engine demo --reset` (and the same `--dir` if you chose one). Reset is refused for unmarked directories.
 
@@ -40,7 +42,7 @@ The demo runs three scheduled runs on a simulated clock, then a backlog pass and
 
 1. A file lock makes a second, overlapping run exit at once (macOS and Linux; elsewhere, don't let the scheduler overlap runs).
 2. Leases that expired without a release mean a worker stopped mid-step. Each counts as one failed attempt, and the lead resumes from its last checkpoint.
-3. When fewer than `min_queue` leads are due, the next searches run: (market, keyword) cells never searched first, then the oldest once `refresh_days` have passed. Results without a website, directory and social profiles, known or suppressed domains, and websites shared by more than `max_locations_per_domain` places (chains) are skipped.
+3. With `discovery.allow_paid = true`, when fewer than `min_queue` leads are due, the next Places searches run: (market, keyword) cells never searched first, then the oldest once `refresh_days` have passed. Results without a website, directory and social profiles, known or suppressed domains, and websites shared by more than `max_locations_per_domain` places (chains) are skipped.
 4. Due leads are claimed one at a time, most advanced first, and pushed through verify, write and gate. Each finished step is checkpointed in SQLite.
 5. A failed step keeps the lead at its last checkpoint and schedules a retry after 30 minutes, then 60, 120 and so on up to `max_backoff_minutes`. After `max_repairs` failed attempts at one stage (3 by default) the lead is retired with the stage and the error.
 6. When the model API fails (rate limit, outage, bad key) the lead is released untouched and the run stops; that never uses a repair attempt. Five failures in a row also end the run, because that pattern usually means a shared problem such as a network outage.
@@ -67,9 +69,9 @@ a failed step: same stage, attempt + 1, retry after backoff --> retired (reason)
 
 ## Evidence rules
 
-- **Decision-maker.** A named person with an owner-level role from `[verify] roles` (owner, founder, president, principal and similar) in a sentence on the site, on a team card ("Dana Whitlock" above "Owner"), or in a schema.org founder or employee node. A first name alone, a heading, someone else's role ("the founder's daughter"), a former owner or an explicitly negated role is not proof. The strongest allowed role wins, and a sentence on the site beats a schema.org node alone. The gate uses the same configured roles and canonical name matching as verification; each merged name variant must have its own evidence.
-- **Address.** Published on the site, on the business's own domain, not a shared inbox (info@, hello@, office@ and similar), and tied to the person: the address matches their name (dana.whitlock@, dwhitlock@) or is printed unambiguously beside it. A paragraph naming another person is insufficient for a nearby-name binding. A gmail-style address counts only when the person's name is printed separately from the address. The gate checks the association again. The engine never guesses addresses or buys them from enrichment services.
-- **Opener facts.** Founding year, years in business, specialty and awards, each with the sentence it came from.
+- **Decision-maker.** A named person with an owner-level role from `[verify] roles` (owner, founder, president, principal and similar) in a sentence on the site, on a team card ("Dana Whitlock" above "Owner"), or in a schema.org founder or employee node. A first name alone, a heading, someone else's role ("the founder's daughter"), a former owner or an explicitly negated role is not proof. Visible, person-specific retirement or departure evidence overrides a schema role, including on another page. Unrelated descriptions of staff, another person or a previous office do not disqualify a current owner. The strongest allowed role wins, and a sentence on the site beats a schema.org node alone. The gate uses the same configured roles and canonical name matching as verification; each merged name variant must have its own evidence.
+- **Address.** Published on the site, on the business's own domain, not a shared inbox (info@, hello@, office@ and similar), and tied to the person: the address matches their name (dana.whitlock@, dwhitlock@) or is printed unambiguously beside it. The relevant contact clause must be unambiguous: conflicting staff context is rejected even when the address matches the owner's first name. A gmail-style address counts only when the person's name is printed separately from the address. The gate checks the association again. The engine never guesses addresses or buys them from enrichment services.
+- **Opener facts.** Founding year, years in business, specialty and awards, each with the sentence it came from and the target business as its subject. Ambiguous subjects and claims about suppliers, clients or another business are rejected. The gate checks the full stored page so an excerpt cannot hide a different subject.
 - **Every kept fact** stores its source URL, its method (`text`, `schema.org` or `mailto`) and its quote, plus the fetched page text, bounded by the fetch size cap. Verification checks the serialized snapshot before checkpointing, and the gate proves the fact's values and relationships again without fetching anything. Unknown kinds and methods fail. `lead-engine export` writes the facts to CSV.
 
 ## Voice rules
@@ -80,7 +82,7 @@ Numbers must be complete numeric values. Mixed letter-and-digit forms such as `2
 
 Two writers:
 
-- `template` (default, no keys) fills the `[templates]` in voice.toml with one fact's values. The order rotates per lead so consecutive leads open differently. Each default kind has six distinct openings for the five-opener exclusion window. Custom templates need more distinct openings than `distinct_window` for repeated facts.
+- `template` (default, no keys) fills the `[templates]` in voice.toml with one fact's values. The order rotates per lead so consecutive leads open differently. Each default kind has six distinct openings for the five-opener exclusion window. Custom templates need more distinct openings than `distinct_window` that pass every voice rule with the expected fact values; check reading grade as well as distinct prefixes. The default specialty openings cover repeated tax preparation, financial reporting and bookkeeping facts.
 - `claude` (optional): `uv sync --extra llm`, set `ANTHROPIC_API_KEY` and `[writer] mode = "claude"`. The model receives the facts, the voice rules and the recent openings, and returns strict JSON with the line and the ids of the facts it used. Addresses are redacted from every prompt field; original evidence stays local. A draft that fails the rules gets one repair round with the problems listed; a second failure is a failed attempt in the repair cycle.
 
 ## Connectors
@@ -105,6 +107,8 @@ A high warmup score does not prove that emails reach the inbox. Two commands che
 - `lead-engine warmup` reads every sending inbox's settings and flags values outside the ranges in `[warmup]`: account and warmup status, daily limit, sending gap, warmup volume, reply and other warmup rates, warmup score, and ramp-up turned off on a new inbox. A rate between 0 and 1 gets a hint, because the platform reads those fields as percentages. `--strict` exits 1 when an inbox is flagged.
 - `lead-engine placement send` sends one test email from every sending inbox to the seed mailboxes you own (`[[placement.seeds]]`), with a run token in the subject. It is a dry run unless you add `--send`. `placement read` opens each seed over IMAP, read-only, and finds each message in the inbox or spam folder by the token and the From address. `placement report` prints each sending domain with **keep** only if every seed message from every inbox on it reached the inbox; any spam or missing message benches the domain. Moving inboxes in or out of a campaign stays your decision. Gmail's Promotions tab is not visible over IMAP, so "inbox" means the INBOX folder.
 
+Seed addresses are stripped of surrounding whitespace and lowercased consistently for configuration, sending, IMAP lookup and placement result keys.
+
 Seed runs are saved before the first request and after each accepted send. If interrupted, resume with `uv run --env-file .env lead-engine placement send --send --run out/placement/run-seed-TOKEN.json`, using the actual saved filename. Resume requires unchanged senders, seed addresses, subject and body. It sends only pending entries, skipping accepted and unresolved entries. A new run is blocked while an earlier run is unfinished. Inspect unresolved sends in the platform and seed mailboxes; never turn them back into pending entries without proving that no send occurred. Any spam copy benches the domain even if an inbox copy also exists.
 
 Reading and resuming a run require its file to be in the configured placement output directory, with a filename matching the run token. Both commands hold that directory's lock throughout loading and saving. An overlapping command exits with an error; a different config cannot bypass the lock to rewrite another directory's run.
@@ -126,7 +130,7 @@ Reading and resuming a run require its file to be in the configured placement ou
 
 Everything lives in `lead-engine.toml` (start from `uv run lead-engine init`; defaults are in `src/lead_engine/config.py`):
 
-- `[discovery]`: Places or CSV, markets, keywords, queue size, searches per run, chain and refresh rules.
+- `[discovery]`: Places or CSV, `allow_paid` (false by default; explicit permission for billed Places searches), markets, keywords, queue size, searches per run, chain and refresh rules.
 - `[verify]`: decision-maker roles, pages per site, required and excluded terms, free-mail rule.
 - `[fetch]`: user agent, timeout, size cap, spacing between requests to one site.
 - `[engine]`: max repairs, backoff, lease, time and lead budget per run, failures in a row that end a run, when a lead counts as stale.
@@ -138,7 +142,7 @@ Credentials come from environment variables, never from this file (see [.env.exa
 
 ## Cost
 
-Verification fetches websites directly and costs nothing. Each Places Text Search request that asks for websites is billed at Google's Text Search Enterprise rate; `cells_per_tick` and `pages_per_search` bound the requests per run. The template writer is free. The model writer makes one call per draft and at most two per attempt. Instantly calls are covered by your plan.
+Verification fetches websites directly and costs nothing. Paid discovery is disabled until `discovery.allow_paid = true`, regardless of hand-off mode. Each Places Text Search request that asks for websites is billed at Google's Text Search Enterprise rate; `cells_per_tick` and `pages_per_search` bound the requests per run. The template writer is free. The model writer makes one call per draft and at most two per attempt. Instantly calls are covered by your plan.
 
 ## Repo layout
 

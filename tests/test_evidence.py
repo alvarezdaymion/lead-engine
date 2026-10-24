@@ -52,3 +52,17 @@ def test_schema_role_values_and_method_must_match_the_node():
     assert supported(fact, [page])
     fact["value"]["role"] = "President"
     assert not supported(fact, [page])
+
+
+def test_a_quote_about_a_supplier_does_not_prove_the_business_founding_year():
+    page = source("Our supplier was founded in 2012.")
+    fact = {"kind": "founded", "value": {"year": "2012"}, "source_url": page.url,
+            "method": "text", "quote": page.text}
+    assert not supported(fact, [page])
+
+
+def test_an_excerpt_cannot_remove_a_third_party_subject_from_the_snapshot():
+    page = source("Our supplier was founded in 2012.")
+    fact = {"kind": "founded", "value": {"year": "2012"}, "source_url": page.url,
+            "method": "text", "quote": "founded in 2012."}
+    assert not supported(fact, [page])

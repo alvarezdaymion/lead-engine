@@ -25,7 +25,8 @@ class PlacesSource:
     name = "places"
 
     def __init__(self, api_key: str | None = None, transport: Transport | None = None, max_pages: int = 1,
-                 region_code: str = "US"):
+                 region_code: str = "US", *, allow_paid: bool = False):
+        self.allow_paid = allow_paid
         self.key = api_key or os.environ.get("GOOGLE_PLACES_API_KEY", "")
         if not self.key:
             raise RuntimeError("set GOOGLE_PLACES_API_KEY")
@@ -34,6 +35,8 @@ class PlacesSource:
         self.region_code = region_code
 
     def search(self, keyword: str, market: str) -> list[Candidate]:
+        if self.allow_paid is not True:
+            raise PermissionError("paid Places discovery requires discovery.allow_paid = true")
         body: dict[str, object] = {"textQuery": "%s in %s" % (keyword, market), "pageSize": 20}
         if self.region_code:
             body["regionCode"] = self.region_code

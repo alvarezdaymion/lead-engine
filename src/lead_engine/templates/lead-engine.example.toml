@@ -4,6 +4,7 @@
 
 [discovery]
 source = "places"            # places (Google Places Text Search) | csv
+allow_paid = false           # set true only to authorize billable Places searches; CSV needs no opt-in
 csv_path = "import.csv"      # used when source = "csv"; columns: company, website, market, keyword
 markets = ["Cedar Hollow, OR", "Port Alder, WA"]
 keywords = ["bookkeeping firm", "home inspection"]

@@ -54,12 +54,12 @@ years = [
   "After {years} years at this, you have a long track record.",
 ]
 specialty = [
-  "Focusing on {specialty} is a smart way to stand out.",
-  "Building the business around {specialty} is a sharp call.",
-  "Your focus is {specialty}.",
-  "The firm specializes in {specialty}.",
-  "You specialize in {specialty}.",
-  "{specialty_cap} is the focus at {company}.",
+  "Your firm has a focus on {specialty} in the work it does.",
+  "The work you do at your firm is focused on {specialty}.",
+  "You keep the focus of your work on {specialty} at your firm.",
+  "At your firm, the work is built around a focus on {specialty}.",
+  "When it comes to the work your firm does, you focus on {specialty}.",
+  "For your firm, {specialty} is the focus of the work you do.",
 ]
 award = [
   "Getting {verb} {award} is the kind of thing customers notice.",
