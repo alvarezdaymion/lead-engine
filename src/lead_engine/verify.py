@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
-from .evidence import EVIDENCE_VERSION, Page, normalize, schema_people, schema_quote, supported
+from .evidence import EVIDENCE_VERSION, Page, complete, normalize, schema_people, schema_quote, supported
 from .fetch import Disallowed, Fetcher, FetchError, OffsiteRedirect, host_of
 from .http import safe_url
 from .names import name_key, split_name
@@ -75,25 +75,27 @@ def _heading_allowed(heading: str, company: str, names: set[str] | None = None) 
 
 def _scope_allowed(page: Page, scope: str, company: str, names: set[str] | None = None) -> bool:
     text = normalize(scope)
-    return all(isinstance(headings, list) and all(_heading_allowed(heading, company, names) for heading in headings)
+    return all(isinstance(headings, list) and all(plain and _heading_allowed(heading, company, names)
+                                                for heading, plain in headings)
                for content, headings in page.sections if text == normalize(content))
 
 
 def _mentions_person(text: str, names: set[str]) -> bool:
-    text = surface(text)
-    for prefix in ("Meet ", "Email "):
-        if text.startswith(prefix):
-            text = text[len(prefix):]
-            break
-    word = r"(?:[A-Z][a-z]+|[A-Z]{2,})"
-    captured = list(re.finditer(rf"\b{word}(?: {word})+\b", text))
-    for name in names:
-        for match in re.finditer(r"\b%s\b" % re.escape(name), text, re.I):
-            if not any(len(run.group().split()) <= 3 and run.start() <= match.start() and match.end() <= run.end()
-                       and run.span() != match.span()
-                       for run in captured):
-                return True
-    return False
+    return any(re.search(r"\b%s\b" % re.escape(name), surface(text), re.I) for name in names)
+
+
+def _accepted_scope(page: Page, text: str, is_heading: bool, roles: list[str], company: str, names: set[str],
+                    opener_forms: list[tuple[str, str]], today: dt.date | None) -> bool:
+    if is_heading and _heading_allowed(text, company, names) and _scope_allowed(page, text, company, names):
+        return True
+    identity = _identity(text, roles, company)
+    if identity and _scope_allowed(page, text, company, {identity[0]}):
+        return True
+    if _scope_allowed(page, text, company) and _opener_match(text, opener_forms, today) is not None:
+        return True
+    return any((name := _contact(address, context, method, names))
+               and _scope_allowed(page, text, company, {name})
+               for address, context, method in page.emails if surface(context) == surface(text))
 
 
 def _identity(text: str, roles: list[str], company: str) -> tuple[str, str] | None:
@@ -169,27 +171,23 @@ def find_people(pages: list[Page], roles: list[str], company: str, *, market: st
             person.facts.append(fact)
     eligible = []
     opener_forms = _opener_forms(company, market)
+    all_names = {name for person in people.values() for name in _variants(person)}
     for person in people.values():
         names = _variants(person)
         proven = True
         for page in pages:
-            rejected = page.rejected or ([page.text] if not page.elements and not page.headings else [])
+            rejected = list(page.rejected or ([page.text] if not page.elements and not page.headings else []))
+            for context in page.rejected_contexts:
+                rejected.append("".join("\n" if kind != "text" and _accepted_scope(
+                    page, surface(text), kind == "heading", roles, company, all_names, opener_forms, today) else text
+                    for text, kind in context))
             if any(_mentions_person(text, names) for text in rejected):
                 proven = False
             for scope, is_heading in _assertion_scopes(page):
-                if (is_heading and _heading_allowed(scope, company, names)
-                        and _scope_allowed(page, scope, company, names)):
-                    continue
                 text = surface(scope)
-                identity = _identity(text, roles, company)
-                if identity and _scope_allowed(page, text, company, {identity[0]}):
-                    continue
-                contacts = [(a, c, m) for a, c, m in page.emails if surface(c) == text]
-                business = (_scope_allowed(page, text, company)
-                            and _opener_match(text, opener_forms, today) is not None)
-                if not business and not any(_contact(a, c, m, names) for a, c, m in contacts):
-                    if _mentions_person(text, names):
-                        proven = False
+                if not _accepted_scope(page, text, is_heading, roles, company, all_names, opener_forms, today
+                                       ) and _mentions_person(text, names):
+                    proven = False
         if proven:
             person.facts.sort(key=lambda fact: fact["method"] != "text")
             eligible.append(person)
@@ -378,6 +376,8 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
         "pages_read": read,
         "pages": [p.to_dict() for p in pages],
     }
+    if not complete(data):
+        raise StepError("page snapshots are incomplete")
     snapshots = [Page.from_dict(p) for p in data["pages"]]
     if not all(supported(f, snapshots, company=lead.get("company", ""), market=lead.get("market", ""),
                          roles=settings["roles"]) for f in facts):

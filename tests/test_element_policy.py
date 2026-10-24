@@ -71,10 +71,13 @@ def test_unrelated_quoted_elements_do_not_reject_plain_evidence_elsewhere(tmp_pa
 
 @pytest.mark.parametrize("other", ["Pat Example Smith", "Pat Example Stone"])
 @pytest.mark.parametrize("description", [", CEO.", " retired."])
-def test_longer_whole_names_never_invalidate_an_owner_with_a_name_prefix(tmp_path, other, description):
+def test_only_accepted_longer_name_templates_are_exempt_from_invalidation(tmp_path, other, description):
     _, lead = process(tmp_path, extra="<p>%s%s</p>" % (other, description))
-    assert lead["stage"] == "ready"
-    assert lead["data"]["person"]["full_name"] == "Pat Example"
+    if description == ", CEO.":
+        assert lead["stage"] == "ready"
+        assert lead["data"]["person"]["full_name"] == "Pat Example"
+    else:
+        assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
 @pytest.mark.parametrize("extra", ["<div>Pat Example, Owner.</div>", "<p>Pat Example retired.</p>",

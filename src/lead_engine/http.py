@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from http.client import HTTPException
 from typing import Any
 
 from . import __version__
@@ -62,7 +63,7 @@ class Http:
         where = "%s %s" % (method, safe_url(url))
         try:
             status, raw = self.transport(method, url, {**self.headers, **extra}, body, self.timeout)
-        except OSError as e:  # timeouts and connection errors are OSError subclasses
+        except (OSError, HTTPException, ValueError) as e:
             raise HttpError("%s failed: %s" % (where, type(e).__name__)) from None
         try:
             data = json.loads(raw)

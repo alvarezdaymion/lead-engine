@@ -32,7 +32,7 @@ def pipeline(tmp_path, body, company="Shop", *, stop=False):
 def test_heading_ancestry_serializes_as_exact_individual_strings():
     parsed = parse_html("<h1>Ledger / Payroll</h1><h2>Our <b>team</b></h2>" + IDENTITY + CONTACT, SITE)
     assert parsed.headings == ["Ledger / Payroll", "Our team"]
-    assert ("Pat Example, Owner.", ["Ledger / Payroll", "Our team"]) in parsed.sections
+    assert ("Pat Example, Owner.", [("Ledger / Payroll", True), ("Our team", True)]) in parsed.sections
     assert "Ledger / Payroll" not in parsed.elements
     page = Page(SITE, SITE, 200, True, text=parsed.text, elements=parsed.elements,
                 sections=parsed.sections, headings=parsed.headings)

@@ -72,6 +72,22 @@ def is_suppressed(email: str, site_host: str, s: Suppressions) -> bool:
     return email in s.emails or any(h == d or h.endswith("." + d) for h in hosts if h for d in s.domains)
 
 
+def evidence_problem(lead: dict[str, Any], roles: list[str] | None = None) -> Drop | None:
+    data = lead["data"]
+    if not complete(data):
+        return Drop("incomplete_evidence", "all fetched snapshots are required for eligibility and contact checks")
+    try:
+        pages = [Page.from_dict(p) for p in data["pages"]]
+        facts = {f["id"]: f for f in data.get("facts", [])}
+        needed = data["person"]["fact_ids"] + [data["email"]["fact_id"]] + data["opener"]["fact_ids"]
+        if needed and all(fid in facts and supported(facts[fid], pages, company=lead["company"],
+                                                     market=lead.get("market", ""), roles=roles) for fid in needed):
+            return None
+    except (KeyError, TypeError, ValueError):
+        pass
+    return Drop("unproven_evidence", "stored facts no longer match their complete snapshots")
+
+
 def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, duplicate_of: int | None,
          now: dt.datetime, roles: list[str] | None = None) -> Advance | Drop:
     data = dict(lead["data"])
@@ -80,15 +96,11 @@ def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, dupl
         return Drop("suppressed", email)
     if duplicate_of is not None:
         return Drop("duplicate_email", "%s is already on lead #%d" % (email, duplicate_of))
-    if not complete(data):
-        return Drop("incomplete_evidence", "all fetched snapshots are required for eligibility and contact checks")
+    problem = evidence_problem(lead, roles)
+    if problem:
+        return problem
     pages = [Page.from_dict(p) for p in data["pages"]]
     facts = {f["id"]: f for f in data.get("facts", [])}
-    needed = data["person"]["fact_ids"] + [data["email"]["fact_id"]] + data["opener"]["fact_ids"]
-    for fid in needed:
-        if fid not in facts or not supported(facts[fid], pages, company=lead["company"],
-                                             market=lead.get("market", ""), roles=roles):
-            return Drop("unproven_evidence", "fact %s no longer matches its stored page" % fid)
     person_data = data["person"]
     person_facts = [facts[fid] for fid in person_data["fact_ids"]]
     key = name_key(person_data["first_name"], person_data["last_name"])

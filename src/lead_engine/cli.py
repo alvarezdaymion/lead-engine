@@ -71,7 +71,8 @@ def build_engine(cfg: config_mod.Config, notify: Any = None) -> Engine:
     def handoff(s: Store) -> dict[str, Any]:
         client = InstantlyClient() if cfg["handoff"]["mode"] == "live" else None
         return run_handoff(s, cfg["handoff"], suppressions=suppressions, out_dir=cfg.out_dir / "handoff", client=client,
-                           suppression_file=cfg.path(cfg["gate"]["suppression_file"]))
+                           suppression_file=cfg.path(cfg["gate"]["suppression_file"]),
+                           roles=list(cfg["verify"]["roles"]))
 
     return Engine(cfg.data, store, fetcher=fetcher, writer=writer, voice=voice, suppressions=suppressions,
                   discover=build_discovery(cfg, suppressions), handoff=handoff, notify=notify)

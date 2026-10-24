@@ -17,6 +17,7 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from http.client import HTTPException
 from urllib.parse import urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
@@ -86,7 +87,7 @@ class Fetcher:
         self.requests += 1
         try:
             resp = self.transport(url, headers, self.timeout, self.max_bytes)
-        except OSError as e:  # TimeoutError, URLError and socket errors are all OSError
+        except (OSError, HTTPException, ValueError) as e:
             reason = "timed out" if isinstance(e, TimeoutError) else type(e).__name__
             raise FetchError("%s (%s)" % (safe_url(url), reason)) from None
         finally:
@@ -128,6 +129,16 @@ class Fetcher:
         if rp is None:
             rp = RobotFileParser()
             resp = self._follow(key + "/robots.txt", robots=True)
+            if len(resp.body) > self.max_bytes:
+                raise FetchError("%s exceeded the robots.txt size limit" % safe_url(resp.url))
+            declared = resp.headers.get("content-length")
+            if declared is not None:
+                try:
+                    length = int(declared)
+                except (TypeError, ValueError):
+                    raise FetchError("incomplete robots.txt response: %s" % safe_url(resp.url)) from None
+                if length < 0 or length != len(resp.body):
+                    raise FetchError("incomplete robots.txt response: %s" % safe_url(resp.url))
             if resp.status in (401, 403):
                 rp.disallow_all = True
             elif resp.status >= 400:
@@ -158,7 +169,10 @@ class Fetcher:
         except LookupError:
             body = resp.body[: self.max_bytes].decode("utf-8", "replace")
         parsed = parse_html(body, resp.url)
+        if not parsed.complete:
+            raise FetchError("incomplete HTML scan: %s" % safe_url(url))
         return Page(url, final_url, resp.status, True, parsed.title, parsed.text,
                     [(safe_url(link), text) for link, text in parsed.links], parsed.emails,
                     parsed.jsonld, truncated, elements=parsed.elements, sections=parsed.sections,
-                    quotations=parsed.quotations, headings=parsed.headings, rejected=parsed.rejected)
+                    quotations=parsed.quotations, headings=parsed.headings, rejected=parsed.rejected,
+                    rejected_contexts=parsed.rejected_contexts)

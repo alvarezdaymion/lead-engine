@@ -52,6 +52,34 @@ def test_unreadable_robots_is_transient_not_a_free_pass():
         f.get(SITE + "/")
 
 
+def test_oversized_robots_cannot_grant_permission_or_be_cached():
+    robots = "User-agent: *\n" + "# padding\n" * 40 + "Disallow: /\n"
+    pages = {SITE + "/robots.txt": robots, SITE + "/": PAGE}
+    transport = html_transport(pages)
+    f, _ = fetcher(transport, max_bytes=200)
+    for _ in range(2):
+        with pytest.raises(FetchError, match="size limit"):
+            f.get(SITE + "/")
+    assert [url for url, _ in transport.calls] == [SITE + "/robots.txt"] * 2
+    pages[SITE + "/robots.txt"] = "User-agent: *\nDisallow: /\n"
+    with pytest.raises(Disallowed):
+        f.get(SITE + "/")
+    assert SITE + "/" not in [url for url, _ in transport.calls]
+
+
+def test_declared_incomplete_robots_blocks_the_page_request():
+    calls = []
+
+    def transport(url, headers, timeout, max_bytes):
+        calls.append(url)
+        return Response(200, {"content-length": "100"}, b"User-agent: *\n", url)
+
+    f, _ = fetcher(transport, max_bytes=200)
+    with pytest.raises(FetchError, match="incomplete robots"):
+        f.get(SITE + "/")
+    assert calls == [SITE + "/robots.txt"]
+
+
 def test_timeouts_and_server_errors_are_transient():
     f, _ = fetcher(html_transport({SITE + "/": PAGE}, timeouts={SITE + "/": 1}))
     with pytest.raises(FetchError, match="timed out"):
@@ -77,6 +105,21 @@ def test_bodies_past_the_size_cap_are_unreadable():
     big = "<html><body><p>" + "word " * 5000 + "</p><p>tail-marker</p></body></html>"
     f, _ = fetcher(html_transport({SITE + "/": big}), max_bytes=2000)
     with pytest.raises(FetchError, match="page size limit"):
+        f.get(SITE + "/")
+
+
+def test_a_parser_failure_cannot_turn_a_partial_scan_into_a_page_snapshot(monkeypatch):
+    from lead_engine.html import _Parser
+
+    feed = _Parser.feed
+
+    def incomplete(self, body):
+        feed(self, body)
+        raise ValueError("synthetic parse failure")
+
+    monkeypatch.setattr(_Parser, "feed", incomplete)
+    f, _ = fetcher(html_transport({SITE + "/": PAGE}))
+    with pytest.raises(FetchError, match="incomplete HTML"):
         f.get(SITE + "/")
 
 

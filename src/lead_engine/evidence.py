@@ -14,6 +14,7 @@ from html import unescape
 from typing import Any
 
 EVIDENCE_VERSION = 3
+TEXT_SCAN_VERSION = 1
 
 
 def complete(data: dict[str, Any]) -> bool:
@@ -25,11 +26,18 @@ def complete(data: dict[str, Any]) -> bool:
         return False
     for page in pages:
         if (not isinstance(page, dict) or page.get("ok") is not True or page.get("truncated") is not False
+                or type(page.get("text_scan_version")) is not int or page["text_scan_version"] != TEXT_SCAN_VERSION
                 or type(page.get("status")) is not int or not 200 <= page["status"] < 300
                 or any(not isinstance(page.get(key), str) for key in ("url", "final_url", "text"))
                 or not page["url"] or not page["final_url"]
                 or any(not isinstance(page.get(key), list) for key in
-                       ("elements", "emails", "sections", "quotations", "jsonld", "headings", "rejected"))):
+                       ("elements", "emails", "sections", "quotations", "jsonld", "headings", "rejected",
+                        "rejected_contexts"))):
+            return False
+        if any(not isinstance(context, list) or any(
+                not isinstance(part, (list, tuple)) or len(part) != 2 or not isinstance(part[0], str)
+                or part[1] not in ("text", "element", "heading") for part in context)
+               for context in page["rejected_contexts"]):
             return False
         if (any(not isinstance(value, str) for key in ("elements", "quotations", "headings", "rejected")
                 for value in page[key])
@@ -39,7 +47,9 @@ def complete(data: dict[str, Any]) -> bool:
                        for value in page["emails"])
                 or any(not isinstance(value, (list, tuple)) or len(value) != 2
                        or not isinstance(value[0], str) or not isinstance(value[1], list)
-                       or any(not isinstance(heading, str) for heading in value[1])
+                       or any(not isinstance(heading, (list, tuple)) or len(heading) != 2
+                              or not isinstance(heading[0], str) or type(heading[1]) is not bool
+                              for heading in value[1])
                        for value in page["sections"])):
             return False
     return set(read) == {p["final_url"] for p in pages}
@@ -59,10 +69,12 @@ class Page:
     truncated: bool = False
     error: str = ""
     elements: list[str] = field(default_factory=list)
-    sections: list[tuple[str, list[str]]] = field(default_factory=list)
+    sections: list[tuple[str, list[tuple[str, bool]]]] = field(default_factory=list)
     quotations: list[str] = field(default_factory=list)
     headings: list[str] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
+    text_scan_version: int = TEXT_SCAN_VERSION
+    rejected_contexts: list[list[tuple[str, str]]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -71,7 +83,8 @@ class Page:
     def from_dict(cls, d: dict[str, Any]) -> Page:
         return cls(**{**d, "links": [tuple(x) for x in d.get("links", [])],
                       "emails": [tuple(x) for x in d.get("emails", [])],
-                      "sections": [tuple(x) for x in d.get("sections", [])]})
+                      "sections": [(text, [tuple(heading) for heading in headings])
+                                   for text, headings in d.get("sections", [])]})
 
     @property
     def lines(self) -> list[str]:

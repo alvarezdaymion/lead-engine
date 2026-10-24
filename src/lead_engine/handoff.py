@@ -19,9 +19,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .evidence import complete
 from .fetch import host_of
-from .gate import Suppressions, is_suppressed, load_suppressions
+from .gate import Suppressions, evidence_problem, is_suppressed, load_suppressions
 from .http import HttpError, safe_url
 from .instantly import API, leads_add_body
 from .store import Store
@@ -46,7 +45,7 @@ def lead_payload(lead: dict[str, Any]) -> dict[str, Any]:
 
 def run_handoff(store: Store, settings: dict[str, Any], *, suppressions: Suppressions, out_dir: Path,
                 client: Any = None, campaign_id: str | None = None,
-                suppression_file: Path | None = None) -> dict[str, Any]:
+                suppression_file: Path | None = None, roles: list[str] | None = None) -> dict[str, Any]:
     mode = settings["mode"]
     if mode == "off":
         return {"mode": "off"}
@@ -54,8 +53,9 @@ def run_handoff(store: Store, settings: dict[str, Any], *, suppressions: Suppres
         suppressions = load_suppressions(suppression_file)
     leads = []
     for lead in store.handoff_candidates(int(settings["max_leads_per_run"])):
-        if not complete(lead["data"]):
-            store.drop(lead["id"], "incomplete_evidence", "fresh qualification under the current policy is required")
+        problem = evidence_problem(lead, roles)
+        if problem:
+            store.drop(lead["id"], problem.reason, problem.detail)
             continue
         if is_suppressed(lead["email"], host_of(lead["website"]), suppressions):
             store.drop(lead["id"], "suppressed", lead["email"])
@@ -84,9 +84,9 @@ def run_handoff(store: Store, settings: dict[str, Any], *, suppressions: Suppres
             lead = store.get(original["id"])
             if lead["stage"] != "ready" or store.handoff_recorded(lead["email"]):
                 continue
-            if not complete(lead["data"]):
-                store.drop(lead["id"], "incomplete_evidence",
-                           "fresh qualification under the current policy is required")
+            problem = evidence_problem(lead, roles)
+            if problem:
+                store.drop(lead["id"], problem.reason, problem.detail)
                 continue
             if is_suppressed(lead["email"], host_of(lead["website"]), current_suppressions):
                 store.drop(lead["id"], "suppressed", lead["email"])

@@ -10,7 +10,7 @@ from html import unescape
 from html.parser import HTMLParser
 from urllib.parse import unquote, urljoin
 
-SKIP_TAGS = {"script", "style", "noscript", "svg", "template", "iframe", "head"}
+SKIP_TAGS = {"script", "style", "head"}
 HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 EVIDENCE_TAGS = {"p", "li", "td", "th", "dt", "dd", "address"} | HEADING_TAGS
 INLINE_TAGS = {"a", "strong", "b", "em", "i", "span", "small", "br"}
@@ -30,10 +30,12 @@ class Parsed:
     emails: list[tuple[str, str, str]] = field(default_factory=list)  # (address, context, method)
     jsonld: list[dict] = field(default_factory=list)
     elements: list[str] = field(default_factory=list)
-    sections: list[tuple[str, list[str]]] = field(default_factory=list)
+    sections: list[tuple[str, list[tuple[str, bool]]]] = field(default_factory=list)
     quotations: list[str] = field(default_factory=list)
     headings: list[str] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
+    rejected_contexts: list[list[tuple[str, str]]] = field(default_factory=list)
+    complete: bool = False
 
     @property
     def text(self) -> str:
@@ -59,12 +61,12 @@ class _Parser(HTMLParser):
         self.mailto: list[tuple[str, str, int | None]] = []
         self.blocks: list[tuple[str, int, int | None]] = []
         self.block_plain: list[bool] = []
-        self.text_blocks: list[tuple[int | None, list[str], list[str]]] = []
+        self.text_blocks: list[tuple[int | None, list[tuple[str, bool]], list[str]]] = []
         self._text_block: list[str] | None = None
         self._text_owner: int | None = None
-        self._text_headings: list[str] = []
+        self._text_headings: list[tuple[str, bool]] = []
         self._blocks: list[int] = []
-        self.headings: dict[int, tuple[str, int | None]] = {}
+        self.headings: dict[int, tuple[str, int | None, bool]] = {}
         self.ld_blocks: list[str] = []
         self._skip = 0
         self._ld: list[str] | None = None
@@ -79,7 +81,7 @@ class _Parser(HTMLParser):
     def _append_text(self, text: str) -> None:
         self.parts.append(text)
         owner = self._owner()
-        headings = [text for text, _ in self.headings.values()]
+        headings = [(text, plain) for text, _, plain in self.headings.values()]
         if self._text_block is None or owner != self._text_owner or headings != self._text_headings:
             self._text_block = []
             self._text_owner, self._text_headings = owner, headings
@@ -109,8 +111,8 @@ class _Parser(HTMLParser):
         elif tag not in INLINE_TAGS:
             self.parts.append("\n")
             if tag not in VOID_TAGS:
-                plain = tag in EVIDENCE_TAGS and all(self.blocks[i][0] in CONTAINER_TAGS | EVIDENCE_TAGS
-                                                   for i in self._blocks)
+                plain = tag in EVIDENCE_TAGS and all(
+                    self.blocks[i][0] in CONTAINER_TAGS | (EVIDENCE_TAGS - HEADING_TAGS) for i in self._blocks)
                 self._blocks.append(len(self.blocks))
                 self.blocks.append((tag, len(self.parts), None))
                 self.block_plain.append(plain)
@@ -160,7 +162,8 @@ class _Parser(HTMLParser):
                         start = self.blocks[self._blocks[i]][1]
                         heading = " ".join("".join(self.parts[start:]).split())
                         self.headings = {n: value for n, value in self.headings.items() if n < level}
-                        self.headings[level] = (heading, self._blocks[i - 1] if i else None)
+                        self.headings[level] = (heading, self._blocks[i - 1] if i else None,
+                                                self.block_plain[self._blocks[i]])
                     self.headings = {n: value for n, value in self.headings.items()
                                      if value[1] not in self._blocks[i:]}
                     for index in self._blocks[i:]:
@@ -208,9 +211,11 @@ def _flatten_ld(node: object, out: list[dict]) -> None:
 
 def parse_html(body: str, base_url: str) -> Parsed:
     p = _Parser(base_url)
+    complete = False
     try:
         p.feed(body)
         p.close()
+        complete = True
     except Exception:  # malformed markup: keep what was parsed
         pass
     lines = clean_lines("".join(p.parts))
@@ -220,6 +225,39 @@ def parse_html(body: str, base_url: str) -> Parsed:
 
     def eligible(block: int | None) -> bool:
         return block is not None and p.block_plain[block] and p.blocks[block][2] is not None
+
+    accepted = [False] * len(p.parts)
+    owners: list[int | None] = [None] * len(p.parts)
+    for i, (_, start, end) in enumerate(p.blocks):
+        if eligible(i):
+            accepted[start:end] = [True] * (end - start)
+            owners[start:end] = [i] * (end - start)
+    rejected = [text for block, _, text in scopes if not eligible(block)]
+    rejected_contexts = []
+    for i, (_, start, end) in enumerate(p.blocks):
+        if not eligible(i):
+            text = " ".join("".join(part for j, part in enumerate(p.parts[start:end], start)
+                                    if not accepted[j]).split())
+            if text:
+                rejected.append(text)
+            context = []
+            cursor = start
+            stop = end if end is not None else len(p.parts)
+            while cursor < stop:
+                owner = owners[cursor]
+                if owner is None:
+                    next_cursor = cursor + 1
+                    while next_cursor < stop and owners[next_cursor] is None:
+                        next_cursor += 1
+                    context.append(("".join(p.parts[cursor:next_cursor]), "text"))
+                    cursor = next_cursor
+                else:
+                    kind = "heading" if p.blocks[owner][0] in HEADING_TAGS else "element"
+                    context.append((elements[owner], kind))
+                    cursor = p.blocks[owner][2]
+            if any(kind != "text" for _, kind in context) and text:
+                rejected_contexts.append(context)
+    rejected = list(dict.fromkeys(rejected))
 
     emails: list[tuple[str, str, str]] = []
     for address, anchor, block in p.mailto:
@@ -232,6 +270,13 @@ def parse_html(body: str, base_url: str) -> Parsed:
             address = m.group(0).lower().rstrip(".")
             if not address.endswith(FILE_SUFFIXES):
                 emails.append((address, text, "text" if eligible(block) else "ineligible"))
+    for text in rejected:
+        for match in EMAIL_RE.finditer(text):
+            address = match.group().lower().rstrip(".")
+            if not address.endswith(FILE_SUFFIXES):
+                occurrence = address, text, "ineligible"
+                if occurrence not in emails:
+                    emails.append(occurrence)
     jsonld: list[dict] = []
     for block in p.ld_blocks:
         for text in (block.strip(), unescape(block.strip())):  # some sites HTML-escape their JSON-LD
@@ -247,4 +292,4 @@ def parse_html(body: str, base_url: str) -> Parsed:
                   sections=[(text, heading) for block, heading, text in scopes if heading and eligible(block)],
                   headings=[elements[i] for i, (tag, _, _) in enumerate(p.blocks)
                             if tag in HEADING_TAGS and eligible(i)],
-                  rejected=[text for block, _, text in scopes if not eligible(block)])
+                  rejected=rejected, rejected_contexts=rejected_contexts, complete=complete)
