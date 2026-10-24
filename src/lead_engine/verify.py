@@ -9,11 +9,11 @@ import datetime as dt
 import re
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urlsplit
 
 from .evidence import EVIDENCE_VERSION, Page, complete, normalize, schema_people, schema_quote, supported
 from .fetch import Disallowed, Fetcher, FetchError, OffsiteRedirect, host_of
-from .http import safe_url
+from .html import EMAIL_RE
+from .http import safe_url, split_url
 from .names import name_key, split_name
 from .outcome import Advance, Drop, StepError
 
@@ -202,11 +202,17 @@ def on_site_domain(domain: str, host: str) -> bool:
 
 def find_email(pages: list[Page], person: Person, host: str, allow_free_mail: bool = True,
                others: list[Person] | None = None) -> tuple[dict[str, Any] | None, list[str]]:
+    names = _variants(person)
     occurrences: dict[str, list[tuple[Page, str, str]]] = {}
     for page in pages:
         for address, context, method in page.emails:
             occurrences.setdefault(address, []).append((page, context, method))
-    names = _variants(person)
+        for context in page.rejected_contexts:
+            text = "".join(" " if kind != "text" and any(
+                surface(fragment) == surface(quote) and _contact(address, quote, method, names)
+                for address, quote, method in page.emails) else fragment for fragment, kind in context)
+            for match in EMAIL_RE.finditer(text.replace("\n", "")):
+                occurrences.setdefault(match.group().lower(), []).append((page, text, "ineligible"))
     rejected, candidates = [], []
     company = str(person.facts[0].get("subject") or "") if person.facts else ""
     for address, items in occurrences.items():
@@ -284,7 +290,7 @@ def candidate_urls(home: Page, host: str, limit: int) -> list[str]:
     for url, text in home.links:
         if host_of(url) != host:
             continue
-        parts = urlsplit(url)
+        parts = split_url(url)
         path, label = parts.path.lower(), text.lower()
         if path.endswith(ASSET_SUFFIXES):
             continue
@@ -301,9 +307,9 @@ def _fit_drop(pages: list[Page], require_any: list[str], exclude_any: list[str])
         for page in pages:
             for sentence in page.lines:
                 if term.lower() in sentence.lower():
-                    return Drop("excluded_term", '"%s" on %s: "%s"' % (term, page.final_url, sentence[:200]))
+                    return Drop("excluded_term", "excluded term on %s" % safe_url(page.final_url))
     if require_any and not any(t.lower() in page.text.lower() for t in require_any for page in pages):
-        return Drop("fit_not_shown", "none of %s appear on %d page(s)" % (", ".join(require_any), len(pages)))
+        return Drop("fit_not_shown", "required terms are absent from the readable pages")
     return None
 
 

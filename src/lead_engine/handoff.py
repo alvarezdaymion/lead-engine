@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .errors import diagnostic, sanitized
 from .fetch import host_of
 from .gate import Suppressions, evidence_problem, is_suppressed, load_suppressions
 from .http import HttpError, safe_url
@@ -43,6 +44,7 @@ def lead_payload(lead: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@sanitized
 def run_handoff(store: Store, settings: dict[str, Any], *, suppressions: Suppressions, out_dir: Path,
                 client: Any = None, campaign_id: str | None = None,
                 suppression_file: Path | None = None, roles: list[str] | None = None) -> dict[str, Any]:
@@ -101,9 +103,9 @@ def run_handoff(store: Store, settings: dict[str, Any], *, suppressions: Suppres
         try:
             resp = client.add_leads(campaign_id, payloads)
             created, counts = _batch_result(resp, len(batch))
-        except HttpError as e:
-            errors.append(str(e))
-            store.event(None, "handoff_failed", {"error": str(e), "leads": [x["id"] for x in batch]})
+        except Exception as e:
+            errors.append(diagnostic(e))
+            store.event(None, "handoff_failed", {"error": diagnostic(e), "leads": [x["id"] for x in batch]})
             break
         store.finish_handoff(batch, created, counts)
         added += len(created)

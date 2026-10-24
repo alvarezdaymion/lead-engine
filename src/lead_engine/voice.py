@@ -16,6 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from .errors import InputError, sanitized
 from .evidence import normalize
 
 EXAMPLE = Path(__file__).parent / "templates" / "voice.example.toml"
@@ -59,18 +60,19 @@ class Voice:
     templates: dict[str, list[str]] = field(default_factory=dict)
 
 
+@sanitized
 def load_voice(path: Path | str) -> Voice:
     with Path(path).open("rb") as f:
         raw = tomllib.load(f)
     known = {f.name for f in fields(Voice)}
     unknown = set(raw) - known
     if unknown:
-        raise ValueError("unknown keys in %s: %s" % (path, ", ".join(sorted(unknown))))
+        raise InputError("unknown voice configuration key")
     voice = Voice(**raw)
     if voice.max_characters < 20 or voice.max_sentences < 1:
-        raise ValueError("max_characters must be at least 20 and max_sentences at least 1")
+        raise InputError("max_characters must be at least 20 and max_sentences at least 1")
     if not all(isinstance(v, list) for v in voice.templates.values()):
-        raise ValueError("each [templates] entry must be a list of strings")
+        raise InputError("each [templates] entry must be a list of strings")
     return voice
 
 
@@ -122,7 +124,7 @@ def check_opener(opener: str, *, voice: Voice, cited: list[dict[str, Any]], comp
     lowered = text.casefold()
     for phrase in voice.banned_phrases:
         if phrase.casefold() in lowered:
-            problems.append('opener uses a banned phrase: "%s"' % phrase)
+            problems.append("opener uses a banned phrase")
     plain = _without(text, company)  # company names like "Harbor Ledger Co." must not count as sentence ends
     if first_name and not voice.mention_first_name and re.search(r"\b%s\b" % re.escape(first_name), plain, re.I):
         problems.append("opener uses the recipient's first name; the greeting already does")
@@ -138,7 +140,7 @@ def check_opener(opener: str, *, voice: Voice, cited: list[dict[str, Any]], comp
         mine = opening(text, n)
         for prev in recent[: voice.distinct_window]:
             if len(mine) == n and opening(prev, n) == mine:
-                problems.append('opener starts like a recent one: "%s"' % " ".join(mine))
+                problems.append("opener starts like a recent one")
                 break
     return problems
 
@@ -158,10 +160,10 @@ def _evidence_problems(text: str, cited: list[dict[str, Any]], company: str, mar
         proven = (Decimal(num.replace(",", "")) in numbers if NUMBER.fullmatch(num)
                   else normalize(num) in published_tokens)
         if not proven:
-            problems.append("the number %s is not in the cited evidence" % num)
+            problems.append("a number is not in the cited evidence")
     for word in re.findall(r"[a-z]+", text.lower()):
         if word in NUMBER_WORDS and word not in quote_words and Decimal(NUMBER_WORDS[word]) not in numbers:
-            problems.append('"%s" is not in the cited evidence' % word)
+            problems.append("a number word is not in the cited evidence")
     for sentence in sentences(text):
         for word in re.findall(r"[A-Za-z][A-Za-z'\u2019-]*", sentence)[1:]:
             if not word[0].isupper():
@@ -170,5 +172,5 @@ def _evidence_problems(text: str, cited: list[dict[str, Any]], company: str, mar
             known = context | quote_words
             if key in ALWAYS_OK or key in known or all(p in known for p in re.split(r"[-']", key) if p):
                 continue
-            problems.append('"%s" is not in the cited evidence' % word)
+            problems.append("a name is not in the cited evidence")
     return list(dict.fromkeys(problems))

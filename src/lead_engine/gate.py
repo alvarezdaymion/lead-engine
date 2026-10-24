@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
+from .errors import InputError, sanitized
 from .evidence import Page, complete, supported
 from .fetch import host_of
 from .html import EMAIL_RE
@@ -36,33 +37,34 @@ class Suppressions:
         return len(self.emails) + len(self.domains)
 
 
+@sanitized
 def load_suppressions(path: Path | None) -> Suppressions:
     """Read a complete CSV with an `email` column, a `domain` column, or both. Fail closed on invalid input."""
     if path is None:
-        raise ValueError("a suppression file is required")
+        raise InputError("a suppression file is required")
     emails, domains = set(), set()
     with Path(path).open(newline="", encoding="utf-8-sig") as f:
         try:
             reader = csv.DictReader(f, strict=True)
             fields = reader.fieldnames or []
             if not fields or set(fields) - {"email", "domain"} or len(fields) != len(set(fields)):
-                raise ValueError("suppression CSV columns must be email, domain, or both, without duplicates")
+                raise InputError("suppression CSV columns must be email, domain, or both, without duplicates")
             for row in reader:
                 if None in row or any(value is None for value in row.values()):
-                    raise ValueError("suppression CSV has an incomplete row")
+                    raise InputError("suppression CSV has an incomplete row")
                 email = (row.get("email") or "").strip().lower()
                 domain = (row.get("domain") or "").strip().lower().removeprefix("@").removeprefix("www.")
                 if email:
                     if not EMAIL_RE.fullmatch(email):
-                        raise ValueError("suppression CSV has an invalid email")
+                        raise InputError("suppression CSV has an invalid email")
                     emails.add(email)
                 if domain:
                     if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+",
                                         domain):
-                        raise ValueError("suppression CSV has an invalid domain")
+                        raise InputError("suppression CSV has an invalid domain")
                     domains.add(domain)
         except csv.Error:
-            raise ValueError("suppression CSV is malformed") from None
+            raise InputError("suppression CSV is malformed") from None
     return Suppressions(frozenset(emails), frozenset(domains))
 
 

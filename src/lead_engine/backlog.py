@@ -20,14 +20,16 @@ from pathlib import Path
 from typing import Any
 
 from .engine import Engine
+from .errors import InputError, diagnostic, sanitized
 from .fetch import host_of
 from .names import same_person
-from .outcome import Drop, StepError
+from .outcome import Drop, SharedOutage
 from .verify import research
 
 IMPORT_COLUMNS = ("company", "website", "first_name", "last_name", "email")
 
 
+@sanitized
 def import_stranded(engine: Engine, path: Path | str) -> int:
     """Queue half-researched leads from another tool. Known domains are skipped. Returns rows added."""
     store = engine.store
@@ -36,7 +38,7 @@ def import_stranded(engine: Engine, path: Path | str) -> int:
         reader = csv.DictReader(f)
         missing = {"company", "website"} - set(reader.fieldnames or [])
         if missing:
-            raise ValueError("%s is missing column(s): %s" % (path, ", ".join(sorted(missing))))
+            raise InputError("stranded CSV is missing required columns: %s" % ", ".join(sorted(missing)))
         for row in reader:
             website = (row.get("website") or "").strip()
             if website and "://" not in website:
@@ -82,9 +84,12 @@ def requalify(engine: Engine, limit: int | None = None) -> dict[str, Any]:
         row: dict[str, Any] = {"id": lead["id"], "company": lead["company"], "was": lead["stage"]}
         try:
             outcome = research(lead, engine.fetcher, engine.s["verify"], engine.clock().date())
-        except StepError as e:
-            row.update(result="inconclusive", detail=str(e))
-            store.event(lead["id"], "backlog_inconclusive", {"error": str(e)})
+        except SharedOutage as e:
+            stop_reason = "shared outage: %s" % diagnostic(e)
+            break
+        except Exception as e:
+            row.update(result="inconclusive", detail=diagnostic(e))
+            store.event(lead["id"], "backlog_inconclusive", {"error": diagnostic(e)})
             rows.append(row)
             continue
         if isinstance(outcome, Drop):

@@ -16,6 +16,7 @@ from . import placement as placement_mod
 from . import warmup as warmup_mod
 from .backlog import import_stranded, requalify
 from .engine import Engine, TickLock
+from .errors import InputError, OperationError, diagnostic
 from .fetch import Fetcher
 from .gate import Suppressions, load_suppressions
 from .handoff import run_handoff
@@ -46,15 +47,15 @@ def build_discovery(cfg: config_mod.Config, suppressions: Suppressions) -> Any:
         return None
     if not d["markets"] or not d["keywords"]:
         def missing(store: Store) -> dict[str, Any]:
-            raise RuntimeError("set discovery.markets and discovery.keywords in lead-engine.toml")
+            raise OperationError("set discovery.markets and discovery.keywords in lead-engine.toml")
         return missing
     try:
         source = PlacesSource(max_pages=int(d["pages_per_search"]), region_code=str(d["region_code"]), allow_paid=True)
-    except RuntimeError as e:
-        message = str(e)
+    except Exception as e:
+        message = diagnostic(e)
 
         def unavailable(store: Store) -> dict[str, Any]:
-            raise RuntimeError(message)
+            raise OperationError(message)
         return unavailable
     return Discovery(d, source, suppressions, lambda: dt.datetime.now(dt.UTC))
 
@@ -130,7 +131,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     try:
         voice = load_voice(voice_path)
     except FileNotFoundError:
-        print("Voice rules: %s is missing. Run `lead-engine init` or copy the example." % voice_path)
+        print("Voice rules file is missing. Run `lead-engine init` or copy the example.")
         return 1
     print("Voice rules: %s OK (%d chars, %d sentences, grade %.1f, %d banned phrases, templates: %s)"
           % (voice_path.name, voice.max_characters, voice.max_sentences, voice.max_grade, len(voice.banned_phrases),
@@ -232,10 +233,10 @@ def cmd_handoff(args: argparse.Namespace) -> int:
 def _load_placement_run(out: Path, requested: str | None) -> tuple[Path, dict[str, Any]]:
     path = (Path(requested) if requested else placement_mod.latest(out)).resolve()
     if path.parent != out.resolve():
-        raise ValueError("seed run must be in the configured placement output directory")
+        raise InputError("seed run must be in the configured placement output directory")
     run = json.loads(path.read_text())
     if not isinstance(run, dict) or path.name != "run-%s.json" % run.get("token", ""):
-        raise ValueError("seed run filename does not match its token")
+        raise InputError("seed run filename does not match its token")
     return path, run
 
 
@@ -250,7 +251,7 @@ def cmd_placement(args: argparse.Namespace) -> int:
             return 1
         with TickLock(out / "send.lock") as acquired:
             if not acquired:
-                raise RuntimeError("another seed test is in progress")
+                raise OperationError("another seed test is in progress")
             client = InstantlyClient()
             seed_addresses = {s.address.lower() for s in seeds}
             wanted = {d.lower() for d in p["sender_domains"]}
@@ -276,7 +277,7 @@ def cmd_placement(args: argparse.Namespace) -> int:
     if args.action == "read":
         with TickLock(out / "send.lock") as acquired:
             if not acquired:
-                raise RuntimeError("another seed test is in progress")
+                raise OperationError("another seed test is in progress")
             path, run = _load_placement_run(out, args.run)
             run = placement_mod.read(run, seeds)
             placement_mod.save(run, path.parent)
@@ -346,8 +347,8 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     try:
         return int(args.fn(args))
-    except (FileNotFoundError, ValueError, RuntimeError) as e:
-        print("error: %s" % e, file=sys.stderr)
+    except Exception as e:
+        print("error: %s" % diagnostic(e), file=sys.stderr)
         return 2
 
 

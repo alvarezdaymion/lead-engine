@@ -14,7 +14,7 @@ from html import unescape
 from typing import Any
 
 EVIDENCE_VERSION = 3
-TEXT_SCAN_VERSION = 1
+TEXT_SCAN_VERSION = 2
 
 
 def complete(data: dict[str, Any]) -> bool:
@@ -26,6 +26,7 @@ def complete(data: dict[str, Any]) -> bool:
         return False
     for page in pages:
         if (not isinstance(page, dict) or page.get("ok") is not True or page.get("truncated") is not False
+                or page.get("http_complete") is not True or page.get("status") in (206, 226)
                 or type(page.get("text_scan_version")) is not int or page["text_scan_version"] != TEXT_SCAN_VERSION
                 or type(page.get("status")) is not int or not 200 <= page["status"] < 300
                 or any(not isinstance(page.get(key), str) for key in ("url", "final_url", "text"))
@@ -75,6 +76,7 @@ class Page:
     rejected: list[str] = field(default_factory=list)
     text_scan_version: int = TEXT_SCAN_VERSION
     rejected_contexts: list[list[tuple[str, str]]] = field(default_factory=list)
+    http_complete: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)

@@ -22,6 +22,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .errors import diagnostic, sanitized
 from .fetch import Fetcher
 from .gate import Suppressions, gate
 from .outcome import Advance, Drop, SharedOutage, StepError
@@ -65,7 +66,7 @@ class Engine:
             dup = self.store.email_taken(lead["data"]["email"]["address"], lead["id"])
             return gate(lead, suppressions=self.suppressions, voice=self.voice, duplicate_of=dup, now=self.clock(),
                          roles=list(self.s["verify"]["roles"]))
-        raise ValueError("no step for stage %r" % stage)
+        raise ValueError("no step for this stage")
 
     def process(self, lead: dict[str, Any]) -> str:
         """Advance one leased lead as far as it goes. Returns 'ready' or 'dropped'; raises on failure."""
@@ -98,7 +99,7 @@ class Engine:
             line.update(outcome="released", detail=str(e))
             return line
         except Exception as e:  # anything else is this lead's failure alone
-            error = str(e) if isinstance(e, StepError) else "%s: %s" % (type(e).__name__, e)
+            error = diagnostic(e)
             e_ = self.engine
             outcome, attempts, next_at = self.store.fail(
                 lead["id"], error, max_repairs=int(e_["max_repairs"]), backoff_minutes=float(e_["backoff_minutes"]),
@@ -129,7 +130,7 @@ class Engine:
                 found = self.discover(self.store)
                 summary["discovery"] = {**found, "skipped": dict(found.get("skipped") or {})}
             except Exception as ex:  # a failed search never blocks leads already queued
-                summary["discovery"] = {"error": "%s: %s" % (type(ex).__name__, ex)}
+                summary["discovery"] = {"error": diagnostic(ex)}
                 self.store.event(None, "discovery_failed", summary["discovery"])
             self.notify("discovery", summary["discovery"])
         budget = int(max_leads if max_leads is not None else e["max_leads_per_tick"])
@@ -159,7 +160,7 @@ class Engine:
             try:
                 summary["handoff"] = self.handoff(self.store)
             except Exception as ex:
-                summary["handoff"] = {"error": "%s: %s" % (type(ex).__name__, ex)}
+                summary["handoff"] = {"error": diagnostic(ex)}
             self.notify("handoff", summary["handoff"])
         self.notify("stop", {"reason": summary["stop_reason"]})
         summary["stages"] = self.store.counts()
@@ -176,6 +177,7 @@ class TickLock:
         self.path = path
         self.handle: Any = None
 
+    @sanitized
     def __enter__(self) -> bool:
         try:
             import fcntl
@@ -189,6 +191,7 @@ class TickLock:
         except BlockingIOError:
             return False
 
+    @sanitized
     def __exit__(self, *exc: object) -> None:
         if self.handle is not None:
             self.handle.close()

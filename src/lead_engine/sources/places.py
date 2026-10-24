@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 
+from ..errors import OperationError
 from ..http import Http, Transport
 from . import Candidate
 
@@ -29,7 +30,7 @@ class PlacesSource:
         self.allow_paid = allow_paid
         self.key = api_key or os.environ.get("GOOGLE_PLACES_API_KEY", "")
         if not self.key:
-            raise RuntimeError("set GOOGLE_PLACES_API_KEY")
+            raise OperationError("set GOOGLE_PLACES_API_KEY")
         self.http = Http(transport=transport, timeout=30)
         self.max_pages = max(1, min(3, int(max_pages)))
         self.region_code = region_code

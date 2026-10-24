@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .errors import InputError, MissingFile, sanitized
 from .verify import DEFAULT_ROLES
 
 DEFAULTS: dict[str, Any] = {
@@ -114,28 +115,29 @@ class Config:
         return self.path(self.data["paths"]["out"])
 
 
+@sanitized
 def validate(d: dict[str, Any]) -> None:
     unknown = set(d) - set(DEFAULTS)
     if unknown:
-        raise ValueError("unknown section(s): %s" % ", ".join(sorted(unknown)))
+        raise InputError("unknown configuration section")
     if d["discovery"]["source"] not in ("places", "csv"):
-        raise ValueError("discovery.source must be places or csv")
+        raise InputError("discovery.source must be places or csv")
     if type(d["discovery"]["allow_paid"]) is not bool:
-        raise ValueError("discovery.allow_paid must be true or false")
+        raise InputError("discovery.allow_paid must be true or false")
     if d["writer"]["mode"] not in ("template", "claude"):
-        raise ValueError("writer.mode must be template or claude")
+        raise InputError("writer.mode must be template or claude")
     if d["handoff"]["mode"] not in ("off", "dry-run", "live"):
-        raise ValueError("handoff.mode must be off, dry-run or live")
+        raise InputError("handoff.mode must be off, dry-run or live")
     if int(d["engine"]["max_repairs"]) < 1:
-        raise ValueError("engine.max_repairs must be at least 1")
+        raise InputError("engine.max_repairs must be at least 1")
     if not d["verify"]["roles"]:
-        raise ValueError("verify.roles is empty")
+        raise InputError("verify.roles is empty")
     if int(d["verify"]["max_pages"]) < 1:
-        raise ValueError("verify.max_pages must be at least 1")
+        raise InputError("verify.max_pages must be at least 1")
     for seed in d["placement"]["seeds"]:
         missing = {"address", "host", "user_env", "password_env"} - set(seed)
         if missing:
-            raise ValueError("placement seed %s is missing %s" % (seed.get("address", "?"), ", ".join(sorted(missing))))
+            raise InputError("placement seed is missing required fields")
 
 
 def from_dict(data: dict[str, Any], root: Path | str = ".") -> Config:
@@ -144,10 +146,11 @@ def from_dict(data: dict[str, Any], root: Path | str = ".") -> Config:
     return Config(merged, Path(root).resolve())
 
 
+@sanitized
 def load(path: Path | str) -> Config:
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError("%s not found. Run `lead-engine init` first." % p)
+        raise MissingFile("configuration file not found; run `lead-engine init` first")
     with p.open("rb") as f:
         data = tomllib.load(f)
     return from_dict(data, p.parent)

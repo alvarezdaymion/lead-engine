@@ -21,6 +21,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .errors import sanitized
 from .http import safe_url
 
 STAGES = ("discovered", "verified", "written", "ready", "handed_off", "dropped", "retired")
@@ -96,6 +97,7 @@ def iso(t: dt.datetime) -> str:
 
 
 class Store:
+    @sanitized
     def __init__(self, path: Path | str, clock: Clock | None = None):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)

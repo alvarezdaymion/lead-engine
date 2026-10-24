@@ -17,13 +17,12 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from http.client import HTTPException
-from urllib.parse import urljoin, urlsplit
 from urllib.robotparser import RobotFileParser
 
+from .errors import InputError, SafeError, diagnostic
 from .evidence import Page
 from .html import parse_html
-from .http import NoRedirect, safe_url
+from .http import NoRedirect, join_url, response_complete, response_headers, safe_url, split_url
 
 
 @dataclass
@@ -37,11 +36,11 @@ class Response:
 Transport = Callable[[str, dict[str, str], float, int], Response]
 
 
-class FetchError(Exception):
+class FetchError(SafeError):
     """A transient failure (timeout, connection error, 429 or 5xx). The step is retried later."""
 
 
-class Disallowed(Exception):
+class Disallowed(SafeError):
     """robots.txt does not allow this URL for our user agent."""
 
 
@@ -53,14 +52,24 @@ def urllib_transport(url: str, headers: dict[str, str], timeout: float, max_byte
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as r:
-            return Response(r.status, {k.lower(): v for k, v in r.headers.items()}, r.read(max_bytes + 1), r.geturl())
+            return Response(r.status, response_headers(r.headers), r.read(max_bytes + 1), r.geturl())
     except urllib.error.HTTPError as e:
         body = e.read(max_bytes + 1) if e.fp else b""
-        return Response(e.code, {k.lower(): v for k, v in (e.headers or {}).items()}, body, url)
+        return Response(e.code, response_headers(e.headers or {}), body, url)
 
 
 def host_of(url: str) -> str:
-    return (urlsplit(url).hostname or "").lower().removeprefix("www.")
+    try:
+        return (split_url(url).hostname or "").lower().removeprefix("www.")
+    except InputError:
+        return ""
+
+
+def _parts(url: str):
+    try:
+        return split_url(url)
+    except InputError as error:
+        raise FetchError(str(error)) from None
 
 
 @dataclass
@@ -87,8 +96,17 @@ class Fetcher:
         self.requests += 1
         try:
             resp = self.transport(url, headers, self.timeout, self.max_bytes)
-        except (OSError, HTTPException, ValueError) as e:
-            reason = "timed out" if isinstance(e, TimeoutError) else type(e).__name__
+            resp.headers = response_headers(resp.headers)
+            if type(resp.status) is not int or not 100 <= resp.status <= 599:
+                raise FetchError("invalid HTTP status: %s" % safe_url(url))
+            if len(resp.body) > self.max_bytes:
+                kind = "robots.txt" if url.endswith("/robots.txt") else "page"
+                raise FetchError("%s exceeded the %s size limit" % (safe_url(url), kind))
+            if not response_complete(resp.headers, resp.body, resp.status):
+                kind = "robots.txt" if url.endswith("/robots.txt") else "HTTP"
+                raise FetchError("incomplete %s response: %s" % (kind, safe_url(url)))
+        except Exception as e:
+            reason = "timed out" if isinstance(e, TimeoutError) else diagnostic(e)
             raise FetchError("%s (%s)" % (safe_url(url), reason)) from None
         finally:
             self._last[host] = self.monotonic()
@@ -99,7 +117,7 @@ class Fetcher:
     def _follow(self, url: str, *, robots: bool = False) -> Response:
         host = host_of(url)
         for _ in range(6):
-            parts = urlsplit(url)
+            parts = _parts(url)
             if parts.scheme not in ("http", "https") or not parts.hostname or parts.username is not None:
                 raise Disallowed("unsupported public URL: %s" % safe_url(url))
             if host_of(url) != host:
@@ -108,6 +126,7 @@ class Fetcher:
                 raise Disallowed(safe_url(url))
             resp = self._request(url)
             if resp.url != url:
+                _parts(resp.url)
                 if host_of(resp.url) != host:
                     raise OffsiteRedirect("redirect leaves the business's host: %s" % safe_url(resp.url))
                 raise FetchError("transport followed a redirect without checking robots.txt")
@@ -115,7 +134,10 @@ class Fetcher:
                 location = resp.headers.get("location")
                 if not location:
                     raise FetchError("redirect has no destination: %s" % safe_url(url))
-                url = urljoin(url, location)
+                try:
+                    url = join_url(url, location)
+                except InputError as error:
+                    raise FetchError(str(error)) from None
                 continue
             if 300 <= resp.status < 400:
                 raise FetchError("unsupported redirect: %s" % safe_url(url))
@@ -123,30 +145,26 @@ class Fetcher:
         raise FetchError("too many redirects: %s" % safe_url(url))
 
     def allowed(self, url: str) -> bool:
-        parts = urlsplit(url)
+        parts = _parts(url)
         key = "%s://%s" % (parts.scheme, parts.netloc.lower())
         rp = self._robots.get(key)
         if rp is None:
             rp = RobotFileParser()
             resp = self._follow(key + "/robots.txt", robots=True)
-            if len(resp.body) > self.max_bytes:
-                raise FetchError("%s exceeded the robots.txt size limit" % safe_url(resp.url))
-            declared = resp.headers.get("content-length")
-            if declared is not None:
-                try:
-                    length = int(declared)
-                except (TypeError, ValueError):
-                    raise FetchError("incomplete robots.txt response: %s" % safe_url(resp.url)) from None
-                if length < 0 or length != len(resp.body):
-                    raise FetchError("incomplete robots.txt response: %s" % safe_url(resp.url))
             if resp.status in (401, 403):
                 rp.disallow_all = True
             elif resp.status >= 400:
                 rp.allow_all = True
             else:
-                rp.parse(resp.body[: self.max_bytes].decode("utf-8", "replace").splitlines())
+                try:
+                    rp.parse(resp.body.decode("utf-8", "replace").splitlines())
+                except Exception as error:
+                    raise FetchError("robots.txt parsing failed: %s" % diagnostic(error)) from None
             self._robots[key] = rp
-        return rp.can_fetch(self.user_agent, url)
+        try:
+            return rp.can_fetch(self.user_agent, url)
+        except Exception as error:
+            raise FetchError("robots.txt permission check failed: %s" % diagnostic(error)) from None
 
     def get(self, url: str) -> Page:
         """Fetch one page. Raises Disallowed or FetchError; a 4xx or non-HTML answer is a page with
@@ -157,7 +175,7 @@ class Fetcher:
             return Page(url, final_url, resp.status, False, error="HTTP %d" % resp.status)
         ctype = resp.headers.get("content-type", "")
         if "html" not in ctype.lower():
-            return Page(url, final_url, resp.status, False, error="not HTML (%s)" % (ctype or "no content type"))
+            return Page(url, final_url, resp.status, False, error="not HTML")
         truncated = len(resp.body) > self.max_bytes
         if truncated:
             raise FetchError("%s exceeded the page size limit" % safe_url(url))
@@ -175,4 +193,4 @@ class Fetcher:
                     [(safe_url(link), text) for link, text in parsed.links], parsed.emails,
                     parsed.jsonld, truncated, elements=parsed.elements, sections=parsed.sections,
                     quotations=parsed.quotations, headings=parsed.headings, rejected=parsed.rejected,
-                    rejected_contexts=parsed.rejected_contexts)
+                    rejected_contexts=parsed.rejected_contexts, http_complete=True)

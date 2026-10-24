@@ -143,7 +143,7 @@ def test_live_handoff_without_credentials_reports_instead_of_crashing(tmp_path, 
     monkeypatch.delenv("INSTANTLY_API_KEY", raising=False)
     config = write_config(tmp_path, '[handoff]\nmode = "live"\n')
     assert cli.main(["run", "--config", str(config)]) == 0
-    assert "hand-off failed: RuntimeError: set INSTANTLY_API_KEY" in capsys.readouterr().out
+    assert "hand-off failed: set INSTANTLY_API_KEY" in capsys.readouterr().out
 
 
 class FakeInstantly:

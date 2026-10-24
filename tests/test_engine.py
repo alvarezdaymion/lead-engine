@@ -196,7 +196,7 @@ def test_discovery_runs_when_the_queue_is_low_and_its_failure_does_not_block_wor
     engine = make_engine(tmp_path, clock, discover=broken)
     add_site(engine.store, HARBOR, "Harbor Ledger Co.")
     summary = engine.tick()
-    assert summary["discovery"] == {"error": "RuntimeError: search API down"}
+    assert summary["discovery"] == {"error": "RuntimeError"}
     assert summary["outcomes"] == {"ready": 1}
 
 

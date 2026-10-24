@@ -9,19 +9,21 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+from ..errors import InputError, MissingFile, sanitized
 from . import Candidate
 
 
+@sanitized
 def read_candidates(path: Path | str, source: str = "csv") -> list[Candidate]:
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError("CSV not found: %s" % p)
+        raise MissingFile("import CSV not found")
     out = []
     with p.open(newline="", encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         missing = {"company", "website"} - set(reader.fieldnames or [])
         if missing:
-            raise ValueError("%s is missing column(s): %s" % (p, ", ".join(sorted(missing))))
+            raise InputError("import CSV is missing required columns: %s" % ", ".join(sorted(missing)))
         for row in reader:
             website = (row.get("website") or "").strip()
             if website and "://" not in website:

@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from .errors import SafeError
+
 
 @dataclass
 class Advance:
@@ -23,11 +25,11 @@ class Drop:
     data: dict[str, Any] | None = None
 
 
-class StepError(Exception):
+class StepError(SafeError):
     """This lead's step failed in a way that may pass later (timeout, unreadable page, a draft that
     failed the voice rules). Counts toward the lead's repair budget."""
 
 
-class SharedOutage(Exception):
+class SharedOutage(SafeError):
     """A dependency every lead needs is down (the model API is rate limited, the platform is failing).
     The lead is released without using its repair budget and the run stops early."""

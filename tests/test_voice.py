@@ -38,15 +38,16 @@ def test_each_style_rule(text, problem):
 
 def test_invented_numbers_and_names_are_caught():
     problems = check("Running the firm since 2011 is a long stretch.")
-    assert problems == ["the number 2011 is not in the cited evidence"]
+    assert problems == ["a number is not in the cited evidence"]
     problems = check("Twelve years running the books in Lakeside is a long stretch.")
-    assert '"twelve" is not in the cited evidence' in problems and '"Lakeside" is not in the cited evidence' in problems
+    assert "a number word is not in the cited evidence" in problems
+    assert "a name is not in the cited evidence" in problems
     assert check("Ten years as a restaurant controller before 2009 is real experience.") == []  # all in the quote
 
 
 @pytest.mark.parametrize("number", ["20", "200", "9", "20.09"])
 def test_partial_numeric_matches_are_not_evidence(number):
-    assert "the number %s is not in the cited evidence" % number in check("You have %s years in business." % number)
+    assert "a number is not in the cited evidence" in check("You have %s years in business." % number)
 
 
 @pytest.mark.parametrize("text", ["Your 20th year in business is here.", "You have 20k clients.",
@@ -99,7 +100,7 @@ def test_openings_must_differ_from_recent_openers():
     assert problems == []  # different company names make different openings
     problems = check("Running a small firm since 2009 is a long stretch.", recent=["Running a small shop is hard."],
                      voice=Voice(distinct_opening_words=3))
-    assert problems == ['opener starts like a recent one: "running a small"']
+    assert problems == ["opener starts like a recent one"]
 
 
 def test_grade_is_flesch_kincaid():
@@ -126,7 +127,7 @@ def test_the_example_voice_file_loads_and_its_templates_pass():
 def test_unknown_voice_keys_are_rejected(tmp_path):
     p = tmp_path / "voice.toml"
     p.write_text("max_characters = 200\nmax_lenght = 3\n")
-    with pytest.raises(ValueError, match="max_lenght"):
+    with pytest.raises(ValueError, match="unknown voice configuration key"):
         load_voice(p)
 
 

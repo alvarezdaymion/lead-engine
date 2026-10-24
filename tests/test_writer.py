@@ -140,7 +140,7 @@ def test_model_writer_gets_one_repair_round_with_the_problems():
     out = write(lead(), ClaudeWriter(SETTINGS, voice, client), voice, [])
     assert out.data["opener"]["text"] == "Since 2009 you have been busy."
     feedback = json.loads(client.messages.calls[1]["messages"][0]["content"])["problems_with_your_last_draft"]
-    assert feedback == ["the number 2011 is not in the cited evidence"]
+    assert feedback == ["a number is not in the cited evidence"]
 
 
 def test_model_writer_failures():

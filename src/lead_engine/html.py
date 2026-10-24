@@ -8,7 +8,9 @@ import re
 from dataclasses import dataclass, field
 from html import unescape
 from html.parser import HTMLParser
-from urllib.parse import unquote, urljoin
+from urllib.parse import unquote
+
+from .http import join_url
 
 SKIP_TAGS = {"script", "style", "head"}
 HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -59,13 +61,14 @@ class _Parser(HTMLParser):
         self.title_parts: list[str] = []
         self.links: list[tuple[str, str]] = []
         self.mailto: list[tuple[str, str, int | None]] = []
-        self.blocks: list[tuple[str, int, int | None]] = []
-        self.block_plain: list[bool] = []
+        # The empty tag is the document root; it never supplies evidence.
+        self.blocks: list[tuple[str, int, int | None]] = [("", 0, None)]
+        self.block_plain: list[bool] = [False]
         self.text_blocks: list[tuple[int | None, list[tuple[str, bool]], list[str]]] = []
         self._text_block: list[str] | None = None
         self._text_owner: int | None = None
         self._text_headings: list[tuple[str, bool]] = []
-        self._blocks: list[int] = []
+        self._blocks: list[int] = [0]
         self.headings: dict[int, tuple[str, int | None, bool]] = {}
         self.ld_blocks: list[str] = []
         self._skip = 0
@@ -76,7 +79,7 @@ class _Parser(HTMLParser):
         self._anchor: list[str] = []
 
     def _owner(self) -> int | None:
-        return next((i for i in reversed(self._blocks) if self.blocks[i][0] in CONTAINER_TAGS | EVIDENCE_TAGS), None)
+        return next((i for i in reversed(self._blocks) if self.blocks[i][0] in CONTAINER_TAGS | EVIDENCE_TAGS), 0)
 
     def _append_text(self, text: str) -> None:
         self.parts.append(text)
@@ -112,7 +115,7 @@ class _Parser(HTMLParser):
             self.parts.append("\n")
             if tag not in VOID_TAGS:
                 plain = tag in EVIDENCE_TAGS and all(
-                    self.blocks[i][0] in CONTAINER_TAGS | (EVIDENCE_TAGS - HEADING_TAGS) for i in self._blocks)
+                    self.blocks[i][0] in CONTAINER_TAGS | (EVIDENCE_TAGS - HEADING_TAGS) | {""} for i in self._blocks)
                 self._blocks.append(len(self.blocks))
                 self.blocks.append((tag, len(self.parts), None))
                 self.block_plain.append(plain)
@@ -148,7 +151,7 @@ class _Parser(HTMLParser):
             if self._mail:
                 self.mailto.append((self._mail, text, self._owner()))
             elif self._href is not None:
-                absolute = urljoin(self.base_url, self._href)
+                absolute = join_url(self.base_url, self._href)
                 if absolute.startswith(("http://", "https://")):
                     self.links.append((absolute.split("#", 1)[0], text))
             self._href = self._mail = None
@@ -218,6 +221,7 @@ def parse_html(body: str, base_url: str) -> Parsed:
         complete = True
     except Exception:  # malformed markup: keep what was parsed
         pass
+    p.blocks[0] = ("", 0, len(p.parts))
     lines = clean_lines("".join(p.parts))
     elements = [" ".join("".join(p.parts[start:end]).split()) for _, start, end in p.blocks]
     scopes = [(block, heading, " ".join("".join(parts).split()))
@@ -240,6 +244,11 @@ def parse_html(body: str, base_url: str) -> Parsed:
                                     if not accepted[j]).split())
             if text:
                 rejected.append(text)
+            # Also retain addresses divided by layout separators.
+            compact = " ".join("".join(part for j, part in enumerate(p.parts[start:end], start)
+                                       if not accepted[j] and part != "\n").split())
+            if compact:
+                rejected.append(compact)
             context = []
             cursor = start
             stop = end if end is not None else len(p.parts)
@@ -255,7 +264,7 @@ def parse_html(body: str, base_url: str) -> Parsed:
                     kind = "heading" if p.blocks[owner][0] in HEADING_TAGS else "element"
                     context.append((elements[owner], kind))
                     cursor = p.blocks[owner][2]
-            if any(kind != "text" for _, kind in context) and text:
+            if any(kind != "text" for _, kind in context):
                 rejected_contexts.append(context)
     rejected = list(dict.fromkeys(rejected))
 

@@ -41,7 +41,8 @@ class FakeImap:
 
     def fetch(self, num, spec):
         sender, _ = self.selected[int(num) - 1]
-        return "OK", [(b"1 (BODY[HEADER.FIELDS (FROM)] {40}", ("From: Sender <%s>\r\n\r\n" % sender).encode()), b")"]
+        body = ("From: Sender <%s>\r\n\r\n" % sender).encode()
+        return "OK", [(b"1 (BODY[HEADER.FIELDS (FROM)] {%d}" % len(body), body), b")"]
 
     def logout(self):
         self.closed = True

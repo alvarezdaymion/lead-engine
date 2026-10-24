@@ -7,6 +7,7 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
+from .errors import InputError, sanitized
 from .evidence import normalize
 from .http import safe_url
 from .names import name_key
@@ -81,6 +82,7 @@ def event_lines(store: Store, kind: str, payload: dict[str, Any], max_repairs: i
     return []
 
 
+@sanitized
 def export_csv(store: Store, path: Path, stages: tuple[str, ...] = ("ready",)) -> int:
     rows = []
     for lead in store.by_stage(stages):
@@ -93,7 +95,7 @@ def export_csv(store: Store, path: Path, stages: tuple[str, ...] = ("ready",)) -
                      and name_key(fact["value"].get("first_name", ""), fact["value"].get("last_name", ""))
                      == name_key(person["first_name"], person["last_name"])), None)
         if role is None:
-            raise ValueError("no evidence matches the exported person and role")
+            raise InputError("no evidence matches the exported person and role")
         email = facts[d["email"]["fact_id"]]
         opener = d.get("opener") or {}
         rows.append({

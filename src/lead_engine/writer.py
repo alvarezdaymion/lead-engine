@@ -16,6 +16,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from .errors import diagnostic
 from .html import EMAIL_RE
 from .http import safe_url
 from .outcome import Advance, Drop, SharedOutage, StepError
@@ -145,14 +146,18 @@ class ClaudeWriter:
             else:
                 resp = client.messages.create(**kwargs)
         except Exception as e:
-            if _is_api_error(e):  # rate limits, outages, bad keys: every lead would fail the same way
-                status = getattr(e, "status_code", None)
-                detail = " (HTTP %d)" % status if type(status) is int and 100 <= status <= 599 else ""
-                raise SharedOutage("model call failed: %s%s" % (type(e).__name__, detail)) from None
+            raise SharedOutage("model call failed: %s" % diagnostic(e)) from None
+        try:
+            reason = getattr(resp, "stop_reason", None)
+            if reason == "refusal":
+                raise StepError("the model declined to write this opener")
+            if reason != "end_turn":
+                raise StepError("the model returned an incomplete response")
+            text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+        except StepError:
             raise
-        if getattr(resp, "stop_reason", "") == "refusal":
-            raise StepError("the model declined to write this opener")
-        text = "".join(getattr(b, "text", "") for b in resp.content if getattr(b, "type", "") == "text")
+        except Exception as error:
+            raise SharedOutage("model response failed: %s" % diagnostic(error)) from None
         try:
             out = json.loads(text)
         except ValueError:
@@ -161,16 +166,11 @@ class ClaudeWriter:
                      "claude:%s" % s["model"])
 
 
-def _is_api_error(e: Exception) -> bool:
-    """Errors raised by the Anthropic SDK (rate limits, overload, connection, auth), without importing it."""
-    return type(e).__module__.split(".")[0] == "anthropic"
-
-
 def _check(draft: Draft, lead: dict[str, Any], voice: Voice, recent: list[str]) -> list[str]:
     facts = {f["id"]: f for f in lead["data"].get("facts", [])}
     unknown = [i for i in draft.fact_ids if i not in facts or facts[i]["kind"] == "email"]
     if unknown:
-        return ["cites facts that don't exist or can't be used: %s" % ", ".join(unknown)]
+        return ["cites facts that don't exist or can't be used"]
     return check_opener(draft.opener, voice=voice, cited=[facts[i] for i in draft.fact_ids],
                         company=lead["company"], market=lead.get("market", ""),
                         first_name=lead["data"]["person"]["first_name"], recent=recent)
