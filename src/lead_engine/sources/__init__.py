@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 from ..fetch import host_of
 from ..gate import Suppressions, is_suppressed
+from ..http import safe_url
 from ..store import Store, iso
 
 NOT_BUSINESS_SITES = {
@@ -79,9 +80,7 @@ def admit_candidates(store: Store, candidates: list[Candidate], *, suppressions:
         elif is_suppressed("", host, suppressions):
             skipped["suppressed"] += 1
         else:
-            website = c.website.strip().split("#")[0]
-            if "utm_" in website:  # map listings add tracking parameters to the homepage link
-                website = website.split("?")[0]
+            website = safe_url(c.website.strip())
             lead_id = store.add_lead(domain=host, company=c.company.strip() or host, website=website,
                                      market=c.market, keyword=c.keyword, source=c.source,
                                      data={"discovery": c.extra} if c.extra else None)

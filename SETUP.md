@@ -21,6 +21,8 @@ Run `uv run lead-engine init` to create `lead-engine.toml`, `voice.toml` and `su
 3. **Decision-maker roles.** The default list runs from owner and founder down to general manager. Remove roles the owner doesn't want to email.
 4. **Fit.** `require_any`: words a fitting business's site should contain. `exclude_any`: signs of a chain or a poor fit (the defaults catch franchise pages).
 
+Verification and the gate use the same role list. Nickname variants may share one person record only when each spelling has its own website evidence. Negated roles do not qualify. Website credentials, query strings and fragments are removed from stored lead URLs and from exports and platform payloads.
+
 Done when `uv run --env-file .env lead-engine check` prints "Config OK" and the number of searches you agreed.
 
 ## 3. Voice and suppressions
@@ -72,9 +74,13 @@ An uncertain POST leaves leads ready but blocks automatic resubmission. `status`
 
 If a seed send is interrupted, use `uv run --env-file .env lead-engine placement send --send --run out/placement/run-seed-TOKEN.json` with its saved filename. The command checks that senders, seeds, subject and body still match. Accepted and unresolved entries are skipped; only pending entries are sent. A new run is blocked until the earlier run is complete. Investigate unresolved entries in the platform and seed mailboxes before any manual correction; do not reset them to pending without proving no send occurred.
 
+Use the same configured placement output directory for `placement read` and resume. Each run filename must match its token. Both commands lock that directory before loading the journal and keep it locked until saving finishes; an overlapping command fails without rewriting progress.
+
 ## 9. Optional: the model writer
 
 If the owner wants openers written by a model instead of templates: `uv sync --extra llm`, put `ANTHROPIC_API_KEY` in `.env`, and set `[writer] mode = "claude"`. It makes one model call per draft and at most two per attempt; tell them that is the metered cost. The same voice and evidence rules apply to every line it writes.
+
+Missing model credentials stop the run as a shared outage without consuming lead repairs. Errors show a controlled exception type and HTTP status, excluding provider response text. Numeric suffixes such as `20th` and `20k` need their complete published form in the cited evidence; use plain numbers when only those are proven.
 
 ## 10. Stranded leads
 

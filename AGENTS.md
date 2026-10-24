@@ -21,6 +21,7 @@ If you were asked to set lead-engine up for someone, follow [SETUP.md](SETUP.md)
 ## Rules
 
 - **No fact without evidence.** Every kept fact has `source_url`, `method` and `quote`, and `evidence.supported` must prove its values and relationships from the stored page snapshot. Unknown kinds and methods fail. Keep the fetched text, bounded by the fetch size cap, and check the serialized snapshots before checkpointing. A new fact kind needs a check in `supported` and a test.
+- **Gate under the same identity policy.** Pass the configured roles to the gate and use verification's canonical name key for merged name variants. Every variant must still be proven against its own snapshot.
 - **Unprovable is a drop; unreadable is a retry.** Return `Drop(reason, detail)` only when the pages were read and the proof is not there. Raise `StepError` for anything transient, including a page that failed to load when nothing was proven without it.
 - **Never guess.** No address patterns, no enrichment lookups, no surnames taken from addresses or search snippets, no facts that are not on the business's own pages.
 - **Openers restate cited facts only.** `voice.check_opener` must pass before a lead is written and again at the gate. Never weaken the evidence check to get a draft through; change `voice.toml` or the templates instead.
@@ -28,10 +29,11 @@ If you were asked to set lead-engine up for someone, follow [SETUP.md](SETUP.md)
 - **`SharedOutage` is for dependencies every lead needs** (the model API, the platform). It releases the lead without using an attempt and stops the run. Don't raise it for one lead's problem.
 - **Never send.** `InstantlyClient._post` allows two paths: `/api/v2/leads/add` and `/api/v2/emails/test`. Don't add writes that launch, pause or edit campaigns or accounts, or that email prospects. The hand-off stays dry run by default and the seed test stays a dry run without `--send`.
 - **External writes need durable intent.** Record hand-off intent in SQLite and seed-send progress in the run file before each request. Never repeat an accepted or unresolved write automatically. Validate complete responses before changing lead states. Resume seed runs with `placement send --send --run FILE`, sending only pending entries with unchanged senders, recipients and content.
+- **Protect seed journals throughout updates.** Read and resume only files in the configured placement output directory whose filenames match their tokens. Hold that directory's lock from before loading a run until saving is complete.
 - **Suppressions fail closed.** The configured CSV must exist and have valid headers and entries. Reload it immediately before every live hand-off batch.
 - **Fetch politely.** Keep robots.txt handling, timeouts, the size cap, per-host spacing and the honest user agent. Read only pages on the business's own host.
-- **Redirects need checks before requests.** Reject API redirects. Website redirects stay on the business's host and obey robots.txt and spacing at each hop. Never retain URL credentials, query strings or fragments in diagnostics or page URLs.
-- **Secrets** come from environment variables. Errors and logs never include headers, keys or query strings.
+- **Redirects need checks before requests.** Reject API redirects. Website redirects stay on the business's host and obey robots.txt and spacing at each hop. Never retain URL credentials, query strings or fragments in diagnostics, page URLs or persisted lead websites. Sanitize exported and transmitted websites too.
+- **Secrets** come from environment variables. Errors and logs never include headers, keys or query strings. Model failures report only exception type and valid HTTP status; client initialization failures are shared outages too.
 - **Demo output is disposable only by request.** Refuse occupied destinations unless they carry the demo marker and `--reset` is explicit. Never reset an unmarked directory.
 - Runtime code is standard library only; the Anthropic SDK is an optional extra.
 

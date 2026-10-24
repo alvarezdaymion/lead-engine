@@ -67,7 +67,7 @@ a failed step: same stage, attempt + 1, retry after backoff --> retired (reason)
 
 ## Evidence rules
 
-- **Decision-maker.** A named person with an owner-level role from `[verify] roles` (owner, founder, president, principal and similar) in a sentence on the site, on a team card ("Dana Whitlock" above "Owner"), or in a schema.org founder or employee node. A first name alone, a heading, someone else's role ("the founder's daughter") or a former owner is not proof. The strongest role wins, and a sentence on the site beats a schema.org node alone.
+- **Decision-maker.** A named person with an owner-level role from `[verify] roles` (owner, founder, president, principal and similar) in a sentence on the site, on a team card ("Dana Whitlock" above "Owner"), or in a schema.org founder or employee node. A first name alone, a heading, someone else's role ("the founder's daughter"), a former owner or an explicitly negated role is not proof. The strongest allowed role wins, and a sentence on the site beats a schema.org node alone. The gate uses the same configured roles and canonical name matching as verification; each merged name variant must have its own evidence.
 - **Address.** Published on the site, on the business's own domain, not a shared inbox (info@, hello@, office@ and similar), and tied to the person: the address matches their name (dana.whitlock@, dwhitlock@) or is printed unambiguously beside it. A paragraph naming another person is insufficient for a nearby-name binding. A gmail-style address counts only when the person's name is printed separately from the address. The gate checks the association again. The engine never guesses addresses or buys them from enrichment services.
 - **Opener facts.** Founding year, years in business, specialty and awards, each with the sentence it came from.
 - **Every kept fact** stores its source URL, its method (`text`, `schema.org` or `mailto`) and its quote, plus the fetched page text, bounded by the fetch size cap. Verification checks the serialized snapshot before checkpointing, and the gate proves the fact's values and relationships again without fetching anything. Unknown kinds and methods fail. `lead-engine export` writes the facts to CSV.
@@ -75,6 +75,8 @@ a failed step: same stage, attempt + 1, retry after backoff --> retired (reason)
 ## Voice rules
 
 `voice.toml` holds the rules every opener must pass: maximum length, maximum sentences, maximum reading grade (Flesch-Kincaid), banned phrases, no greeting (the email template has one), no em dash, no first name, no links, and an opening that differs from the last few openers. The evidence rule is checked too. An opener must cite at least one fact, and every number and capitalized name in it must appear in a cited quote, the company name or the market. That catches invented specifics such as a wrong year or a town the site never mentions. It can't judge every claim, so templates may only restate their fact and the model writer is told to use the cited facts only.
+
+Numbers must be complete numeric values. Mixed letter-and-digit forms such as `20th` and `20k` require that exact token in the cited evidence, company name or market; matching part of a year or converting an unsupported suffix is insufficient.
 
 Two writers:
 
@@ -105,6 +107,8 @@ A high warmup score does not prove that emails reach the inbox. Two commands che
 
 Seed runs are saved before the first request and after each accepted send. If interrupted, resume with `uv run --env-file .env lead-engine placement send --send --run out/placement/run-seed-TOKEN.json`, using the actual saved filename. Resume requires unchanged senders, seed addresses, subject and body. It sends only pending entries, skipping accepted and unresolved entries. A new run is blocked while an earlier run is unfinished. Inspect unresolved sends in the platform and seed mailboxes; never turn them back into pending entries without proving that no send occurred. Any spam copy benches the domain even if an inbox copy also exists.
 
+Reading and resuming a run require its file to be in the configured placement output directory, with a filename matching the run token. Both commands hold that directory's lock throughout loading and saving. An overlapping command exits with an error; a different config cannot bypass the lock to rewrite another directory's run.
+
 ## Safety rules
 
 - **This tool never sends email to prospects.** It adds leads to a campaign, and the platform sends on the campaign's own schedule and settings. The Instantly client has exactly two write paths, adding leads and one test email for the seed test, and refuses any other path before a request is made. It cannot launch, pause or edit a campaign or an account.
@@ -112,7 +116,7 @@ Seed runs are saved before the first request and after each accepted send. If in
 - **Suppressions are checked three times:** domains at discovery, addresses and domains at the gate, and a fresh read of the configured CSV right before each live hand-off batch. Missing files, invalid headers and malformed entries stop processing; an empty list requires a valid header-only CSV.
 - **The seed test only sends with `--send`,** and only to the seed mailboxes you list.
 - **Fetching is polite.** robots.txt is obeyed, the user agent names the tool (put your own contact URL in `[fetch] user_agent`), requests to one site are spaced out, and only pages on the business's own site are read. Every website redirect is checked before following it. API redirects are rejected.
-- **Secrets** come from environment variables. Errors never include them.
+- **Secrets** come from environment variables. Model failures report only their exception type and HTTP status, excluding provider response text. Missing model credentials release the lead and stop the run without using a repair attempt. Website credentials, query strings and fragments are removed before persistence, export and hand-off; opening existing state also cleans its stored website URLs.
 - **Your data stays local.** State, exports, `lead-engine.toml`, `voice.toml` and CSV files at the repo root are git-ignored.
 - You are responsible for following the laws and platform rules that apply to the emails your campaigns send.
 

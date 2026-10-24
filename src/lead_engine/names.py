@@ -51,6 +51,10 @@ def canonical_first(first: str) -> str:
     return NICKNAMES.get(t[0], t[0]) if t else ""
 
 
+def name_key(first: str, last: str) -> tuple[str, str]:
+    return canonical_first(first), " ".join(tokens(last))
+
+
 def same_person(first_a: str, last_a: str, first_b: str, last_b: str) -> bool:
     fa, fb = canonical_first(first_a), canonical_first(first_b)
     la = set(tokens(last_a)) - SUFFIXES

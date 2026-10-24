@@ -63,7 +63,8 @@ class Engine:
             return write(lead, self.writer, self.voice, recent)
         if stage == "written":
             dup = self.store.email_taken(lead["data"]["email"]["address"], lead["id"])
-            return gate(lead, suppressions=self.suppressions, voice=self.voice, duplicate_of=dup, now=self.clock())
+            return gate(lead, suppressions=self.suppressions, voice=self.voice, duplicate_of=dup, now=self.clock(),
+                         roles=list(self.s["verify"]["roles"]))
         raise ValueError("no step for stage %r" % stage)
 
     def process(self, lead: dict[str, Any]) -> str:

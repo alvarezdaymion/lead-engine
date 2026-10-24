@@ -7,6 +7,7 @@ import datetime as dt
 from pathlib import Path
 from typing import Any
 
+from .http import safe_url
 from .store import Store
 
 EXPORT_COLUMNS = [
@@ -87,7 +88,7 @@ def export_csv(store: Store, path: Path, stages: tuple[str, ...] = ("ready",)) -
         email = facts[d["email"]["fact_id"]]
         opener = d.get("opener") or {}
         rows.append({
-            "company": lead["company"], "website": lead["website"], "first_name": d["person"]["first_name"],
+            "company": lead["company"], "website": safe_url(lead["website"]), "first_name": d["person"]["first_name"],
             "last_name": d["person"]["last_name"], "role": d["person"]["role"], "role_source_url": role["source_url"],
             "role_quote": role["quote"], "email": d["email"]["address"], "email_source_url": email["source_url"],
             "email_quote": email["quote"], "opener": opener.get("text", ""),

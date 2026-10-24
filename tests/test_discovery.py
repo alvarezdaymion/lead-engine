@@ -3,10 +3,12 @@
 import json
 
 import pytest
-from helpers import Clock
+from helpers import Clock, html_transport, make_engine
 
 from lead_engine.gate import Suppressions
+from lead_engine.handoff import lead_payload
 from lead_engine.http import HttpError
+from lead_engine.report import export_csv
 from lead_engine.sources import Candidate, Discovery, admit_candidates, next_cells
 from lead_engine.sources.csv_import import read_candidates
 from lead_engine.sources.places import FIELDS, URL, PlacesSource
@@ -82,6 +84,53 @@ def test_candidate_filters(tmp_path):
     assert store.get(tracked[0])["website"] == "https://tracked.example.com/"
     assert dict(skipped) == {"not_a_business_site": 2, "already_known": 1, "suppressed": 1, "no_website": 1,
                              "likely_chain": 3}
+
+
+@pytest.mark.parametrize("source", ["discovery", "direct"])
+def test_website_secrets_are_removed_before_persistence_and_handoff(tmp_path, source):
+    site = "https://shop.example.com/"
+    unsafe = "https://user:synthetic-secret@shop.example.com/?access=synthetic-secret#synthetic-secret"
+    engine = make_engine(tmp_path, Clock(), transport=html_transport({site: "<p>Pat Example, Owner.</p>"
+                         "<p>pat@example.com</p><p>Founded in 2012.</p>"}))
+    if source == "discovery":
+        ids, _ = admit_candidates(engine.store, [Candidate("Shop", unsafe)], suppressions=Suppressions(),
+                                   exclude=set(), max_locations=0)
+        lead_id = ids[0]
+    else:
+        lead_id = engine.store.add_lead(domain="shop.example.com", company="Shop", website=unsafe)
+    assert engine.store.db.execute("SELECT website FROM leads WHERE id = ?", (lead_id,)).fetchone()[0] == site
+    engine.tick(discover=False, handoff=False)
+    lead = engine.store.get(lead_id)
+    assert lead["stage"] == "ready" and lead_payload(lead)["website"] == site
+    export = tmp_path / "ready.csv"
+    export_csv(engine.store, export)
+    assert "synthetic-secret" not in export.read_text()
+
+
+def test_existing_website_urls_are_sanitized_when_state_is_opened(tmp_path):
+    path = tmp_path / "leads.db"
+    store = Store(path)
+    lead_id = store.add_lead(domain="shop.example.com", company="Shop", website="https://shop.example.com/")
+    store.db.execute("UPDATE leads SET website = ? WHERE id = ?",
+                     ("https://user:synthetic-secret@shop.example.com/?access=synthetic-secret#private", lead_id))
+    store.close()
+    reopened = Store(path)
+    assert reopened.db.execute("SELECT website FROM leads WHERE id = ?", (lead_id,)).fetchone()[0] == (
+        "https://shop.example.com/")
+    reopened.close()
+
+
+def test_exports_and_payloads_sanitize_existing_website_values(tmp_path):
+    engine = make_engine(tmp_path, Clock())
+    lead_id = engine.store.add_lead(domain="harbor-ledger.example.com", company="Harbor Ledger Co.",
+                                    website="https://harbor-ledger.example.com/")
+    engine.tick(discover=False, handoff=False)
+    unsafe = "https://user:synthetic-secret@harbor-ledger.example.com/?access=synthetic-secret"
+    engine.store.db.execute("UPDATE leads SET website = ? WHERE id = ?", (unsafe, lead_id))
+    assert lead_payload(engine.store.get(lead_id))["website"] == "https://harbor-ledger.example.com/"
+    export = tmp_path / "ready.csv"
+    export_csv(engine.store, export)
+    assert "synthetic-secret" not in export.read_text()
 
 
 def test_cells_go_unsearched_first_then_oldest_after_refresh(tmp_path):

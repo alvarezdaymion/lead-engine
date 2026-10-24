@@ -21,6 +21,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from .http import safe_url
+
 STAGES = ("discovered", "verified", "written", "ready", "handed_off", "dropped", "retired")
 RESEARCH = ("discovered", "verified", "written")
 TERMINAL = ("handed_off", "dropped", "retired")
@@ -102,6 +104,10 @@ class Store:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.executescript(SCHEMA)
+        urls = self.db.execute("SELECT id, website FROM leads WHERE instr(website, '?') > 0"
+                               " OR instr(website, '#') > 0 OR instr(website, '@') > 0").fetchall()
+        self.db.executemany("UPDATE leads SET website = ? WHERE id = ?",
+                            [(safe_url(row["website"]), row["id"]) for row in urls])
 
     def close(self) -> None:
         self.db.close()
@@ -125,7 +131,7 @@ class Store:
         cur = self.db.execute(
             "INSERT OR IGNORE INTO leads (domain, company, website, market, keyword, source, next_attempt_at,"
             " data_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (domain, company, website, market, keyword, source, now, json.dumps(data or {}), now, now))
+            (domain, company, safe_url(website), market, keyword, source, now, json.dumps(data or {}), now, now))
         return int(cur.lastrowid) if cur.rowcount else None
 
     def get(self, lead_id: int) -> dict[str, Any]:

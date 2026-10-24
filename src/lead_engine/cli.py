@@ -224,11 +224,21 @@ def cmd_handoff(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_placement_run(out: Path, requested: str | None) -> tuple[Path, dict[str, Any]]:
+    path = (Path(requested) if requested else placement_mod.latest(out)).resolve()
+    if path.parent != out.resolve():
+        raise ValueError("seed run must be in the configured placement output directory")
+    run = json.loads(path.read_text())
+    if not isinstance(run, dict) or path.name != "run-%s.json" % run.get("token", ""):
+        raise ValueError("seed run filename does not match its token")
+    return path, run
+
+
 def cmd_placement(args: argparse.Namespace) -> int:
     cfg = config_mod.load(args.config)
     p = cfg["placement"]
     seeds = [placement_mod.Seed.from_config(s) for s in p["seeds"]]
-    out = cfg.out_dir / "placement"
+    out = (cfg.out_dir / "placement").resolve()
     if args.action == "send":
         if not seeds:
             print("Add [[placement.seeds]] to %s first." % args.config)
@@ -245,10 +255,7 @@ def cmd_placement(args: argparse.Namespace) -> int:
             html = cfg.path(p["body_file"]).read_text() if p["body_file"] else SAMPLE_BODY
             saved = None
             if args.run:
-                path = Path(args.run)
-                if path.resolve().parent != out.resolve():
-                    raise ValueError("resume file must be in the configured placement output directory")
-                saved = json.loads(path.read_text())
+                _, saved = _load_placement_run(out, args.run)
             run = placement_mod.send(client, senders, seeds, p["subject"], html, dry_run=not args.send,
                                      out_dir=out, run=saved)
         if not args.send:
@@ -261,18 +268,19 @@ def cmd_placement(args: argparse.Namespace) -> int:
               "Wait about 5 minutes, then: lead-engine placement read"
               % (len(run["sends"]), sum(s["accepted"] is True for s in run["sends"]), unresolved, path))
         return 1 if unresolved else 0
-    path = Path(args.run) if args.run else placement_mod.latest(out)
-    run = json.loads(path.read_text())
     if args.action == "read":
         with TickLock(out / "send.lock") as acquired:
             if not acquired:
                 raise RuntimeError("another seed test is in progress")
-            run = placement_mod.read(json.loads(path.read_text()), seeds)
+            path, run = _load_placement_run(out, args.run)
+            run = placement_mod.read(run, seeds)
             placement_mod.save(run, path.parent)
         missing = sum(1 for s in run["sends"] for v in s["placement"].values() if v == "missing")
         print("Read %d send(s) x %d seed(s); %d not found. Saved %s" % (len(run["sends"]), len(run["seeds"]),
                                                                        missing, path))
         return 0
+    path = Path(args.run) if args.run else placement_mod.latest(out)
+    run = json.loads(path.read_text())
     if not run.get("read"):
         print("This run has not been read yet: lead-engine placement read")
         return 1

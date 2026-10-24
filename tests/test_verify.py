@@ -90,6 +90,24 @@ def test_non_current_role_contexts_are_not_proof(text):
     assert find_people([page(text)], SETTINGS["roles"], "Shop") == []
 
 
+@pytest.mark.parametrize("role_text", ["Not the Owner", "Never an Owner", "Pat Example is not the owner.",
+                                      "The firm was not founded by Pat Example."])
+def test_negated_ownership_cannot_pass_the_pipeline(tmp_path, role_text):
+    from helpers import add_site, make_engine
+    site = "https://shop.example.com/"
+    body = "<div>Pat Example</div><div>%s</div><p>pat@example.com</p><p>Founded in 2012.</p>" % role_text
+    engine = make_engine(tmp_path, Clock(), transport=html_transport({site: body}))
+    lead_id = add_site(engine.store, "shop.example.com", "Shop")
+    engine.tick(discover=False, handoff=False)
+    lead = engine.store.get(lead_id)
+    assert lead["stage"] == "dropped" and lead["reason"] == "decision_maker_not_found"
+
+
+def test_negated_schema_role_cannot_supply_a_decision_maker():
+    p = page("Team", jsonld=[{"@type": "Person", "name": "Pat Example", "jobTitle": "Not the Owner"}])
+    assert find_people([p], SETTINGS["roles"], "Shop") == []
+
+
 def test_non_current_schema_titles_are_not_proof():
     p = page("Team", jsonld=[{"@type": "Person", "name": "Pat Example", "jobTitle": "Former Owner"}])
     assert find_people([p], SETTINGS["roles"], "Shop") == []

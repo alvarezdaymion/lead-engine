@@ -1,11 +1,13 @@
 """The command line, end to end, with the network replaced by the demo's local sites."""
 
 import json
+from pathlib import Path
 
 import pytest
 
 from lead_engine import cli
 from lead_engine.demo import DATA, SiteTransport
+from lead_engine.engine import TickLock
 from lead_engine.fetch import Fetcher
 from lead_engine.http import HttpError
 
@@ -171,6 +173,59 @@ def test_partial_placement_command_preserves_progress_and_requires_explicit_resu
     assert cli.main([*command, "--run", str(path)]) == 1
     assert client.sent == ["a@example.com", "b@example.org", "c@example.com"]
     assert len(list(path.parent.glob("run-*.json"))) == 1
+
+
+@pytest.mark.parametrize("foreign_config", [False, True])
+def test_placement_read_cannot_bypass_the_journal_lock(tmp_path, monkeypatch, foreign_config):
+    root = tmp_path / "primary"
+    root.mkdir()
+    config = write_config(root)
+    out = root / "out" / "placement"
+    path = cli.placement_mod.save({"token": "seed-1", "seeds": [],
+                                  "sends": [{"sender": "a@example.com", "accepted": True}]}, out)
+    original = path.read_bytes()
+    if foreign_config:
+        other = tmp_path / "other"
+        other.mkdir()
+        config = write_config(other)
+    reads = []
+    monkeypatch.setattr(cli.placement_mod, "read", lambda run, seeds: reads.append(run) or run)
+    with TickLock(out / "send.lock") as acquired:
+        assert acquired
+        assert cli.main(["placement", "read", "--config", str(config), "--run", str(path)]) == 2
+    assert reads == [] and path.read_bytes() == original
+
+
+def test_placement_read_loads_the_journal_only_while_locked(tmp_path, monkeypatch):
+    config = write_config(tmp_path)
+    out = tmp_path / "out" / "placement"
+    path = cli.placement_mod.save({"token": "seed-1", "seeds": [], "sends": []}, out)
+    read_text = Path.read_text
+    lock_states = []
+
+    def observe(path_, *args, **kwargs):
+        if path_ == path:
+            with TickLock(out / "send.lock") as acquired:
+                lock_states.append(acquired)
+        return read_text(path_, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", observe)
+    monkeypatch.setattr(cli.placement_mod, "read", lambda run, seeds: run)
+    assert cli.main(["placement", "read", "--config", str(config), "--run", str(path)]) == 0
+    assert lock_states == [False]
+
+
+def test_placement_read_cannot_overwrite_another_run_via_its_token(tmp_path, monkeypatch):
+    config = write_config(tmp_path)
+    out = tmp_path / "out" / "placement"
+    run = {"token": "seed-1", "seeds": [], "sends": [{"sender": "a@example.com", "accepted": True}]}
+    actual = cli.placement_mod.save(run, out)
+    original = actual.read_bytes()
+    alias = out / "copy.json"
+    alias.write_text(json.dumps({**run, "sends": []}))
+    monkeypatch.setattr(cli.placement_mod, "read", lambda run, seeds: run)
+    assert cli.main(["placement", "read", "--config", str(config), "--run", str(alias)]) == 2
+    assert actual.read_bytes() == original
 
 
 def test_errors_are_reported_cleanly(tmp_path, capsys):

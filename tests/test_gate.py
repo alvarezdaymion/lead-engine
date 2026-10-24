@@ -4,7 +4,7 @@ import copy
 import datetime as dt
 
 import pytest
-from helpers import add_site, make_engine
+from helpers import add_site, html_transport, make_engine
 
 from lead_engine.gate import Suppressions, gate, is_suppressed, load_suppressions
 from lead_engine.outcome import Advance, Drop, StepError
@@ -102,6 +102,30 @@ def test_gate_preserves_a_configured_specific_role(tmp_path, clock):
     lead_id = add_site(engine.store, "shop.example.com", "Shop")
     engine.tick(discover=False, handoff=False)
     assert engine.store.get(lead_id)["stage"] == "ready"
+
+
+def test_gate_uses_the_configured_role_even_when_a_stronger_role_is_present(tmp_path, clock):
+    transport = html_transport({"https://shop.example.com/": "<p>Pat Example, President.</p>"
+                               "<p>Pat Example founded the firm in 2012.</p><p>Email Pat: pat@example.com</p>"})
+    engine = make_engine(tmp_path, clock, transport=transport, settings={"verify": {"roles": ["president"]}})
+    lead_id = add_site(engine.store, "shop.example.com", "Shop")
+    engine.tick(discover=False, handoff=False)
+    lead = engine.store.get(lead_id)
+    assert lead["stage"] == "ready" and lead["data"]["person"]["role"] == "President"
+
+
+def test_gate_accepts_individually_proven_nickname_variants(tmp_path, clock):
+    site = "https://shop.example.com/"
+    body = ('<script type="application/ld+json">{"@type":"LocalBusiness",'
+            '"founder":{"@type":"Person","name":"Robert Example"}}</script>'
+            '<p>Bob Example, Owner.</p><p>Email Robert: robert@example.com</p><p>Founded in 2012.</p>')
+    engine = make_engine(tmp_path, clock, transport=html_transport({site: body}))
+    lead_id = add_site(engine.store, "shop.example.com", "Shop")
+    engine.tick(discover=False, handoff=False)
+    lead = engine.store.get(lead_id)
+    assert lead["stage"] == "ready" and lead["attempts"] == 0
+    names = {f["value"]["full_name"] for f in lead["data"]["facts"] if f["kind"] == "decision_maker"}
+    assert names == {"Robert Example", "Bob Example"}
 
 
 def test_an_opener_that_breaks_changed_voice_rules_goes_back_to_be_rewritten(written):

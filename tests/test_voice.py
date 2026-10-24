@@ -49,6 +49,29 @@ def test_partial_numeric_matches_are_not_evidence(number):
     assert "the number %s is not in the cited evidence" % number in check("You have %s years in business." % number)
 
 
+@pytest.mark.parametrize("text", ["Your 20th year in business is here.", "You have 20k clients.",
+                                 "You have 3.5m clients.", "You have 20years at this."])
+def test_digit_suffixes_cannot_evade_numeric_evidence(text):
+    assert check(text)
+
+
+def test_alphanumeric_company_names_remain_usable_when_quoted_exactly():
+    assert check_opener("Shop42 has been at it since 2009.", voice=VOICE, cited=[FOUNDED], company="Shop42") == []
+
+
+@pytest.mark.parametrize("number", ["20th", "20k"])
+def test_numeric_suffixes_require_the_complete_published_form(number):
+    fact = {**FOUNDED, "quote": "Our %s year is here and we have %s clients." % (number, number)}
+    assert check("Your %s year is here." % number, cited=[fact]) == []
+    assert check("Your 21st year is here.", cited=[fact])
+
+
+def test_decimal_suffixes_cannot_be_assembled_from_separate_numbers():
+    fact = {**FOUNDED, "quote": "We have 4.5m clients across 3 towns."}
+    assert check("You have 3.5m clients.", cited=[fact])
+    assert check("You have 4.5m clients.", cited=[fact]) == []
+
+
 def test_numeric_comparisons_normalize_grouping_and_decimal_values():
     fact = {**FOUNDED, "quote": "We have 1,200 clients and 2.5 years in business."}
     assert check("You have 1200 clients.", cited=[fact]) == []

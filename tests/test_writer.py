@@ -5,6 +5,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from helpers import add_site, make_engine
 
 from lead_engine.outcome import Advance, Drop, SharedOutage, StepError
 from lead_engine.voice import EXAMPLE, Voice, load_voice
@@ -157,3 +158,34 @@ def test_api_errors_are_a_shared_outage_not_a_lead_failure():
     writer = ClaudeWriter({**SETTINGS, "fallbacks": False}, voice, FakeClient([RateLimitError("429")]))
     with pytest.raises(SharedOutage, match="model call failed"):
         write(lead(), writer, voice, [])
+
+
+def test_model_error_messages_never_reach_persisted_events(tmp_path, clock):
+    AuthError = type("AuthenticationError", (Exception,),
+                     {"__module__": "anthropic._exceptions", "status_code": 401})
+    marker = "synthetic-private-key"
+    voice = load_voice(EXAMPLE)
+    writer = ClaudeWriter(SETTINGS, voice, FakeClient([AuthError("invalid credential " + marker)]))
+    engine = make_engine(tmp_path, clock, writer=writer)
+    lead_id = add_site(engine.store, "harbor-ledger.example.com", "Harbor Ledger Co.")
+    result = engine.tick(discover=False, handoff=False)
+    assert result["leads"][0]["outcome"] == "released"
+    assert marker not in json.dumps(result) + json.dumps(engine.store.events())
+    assert "AuthenticationError" in result["stop_reason"] and "401" in result["stop_reason"]
+    assert engine.store.get(lead_id)["attempts"] == 0
+
+
+def test_model_initialization_errors_release_the_lead_without_an_attempt(tmp_path, clock, monkeypatch):
+    CredentialsError = type("CredentialsError", (Exception,), {"__module__": "anthropic._exceptions"})
+    writer = ClaudeWriter(SETTINGS, load_voice(EXAMPLE))
+
+    def unavailable():
+        raise CredentialsError("synthetic-private-key is missing")
+
+    monkeypatch.setattr(writer, "_client", unavailable)
+    engine = make_engine(tmp_path, clock, writer=writer)
+    lead_id = add_site(engine.store, "harbor-ledger.example.com", "Harbor Ledger Co.")
+    result = engine.tick(discover=False, handoff=False)
+    assert result["leads"][0]["outcome"] == "released"
+    assert engine.store.get(lead_id)["stage"] == "verified" and engine.store.get(lead_id)["attempts"] == 0
+    assert writer.calls == 0 and "synthetic-private-key" not in json.dumps(engine.store.events())

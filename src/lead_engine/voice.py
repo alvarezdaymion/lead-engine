@@ -30,10 +30,12 @@ NUMBER_WORDS = {
 }
 ALWAYS_OK = {"i", "i'm", "i've", "i'd", "i'll", "ok"}
 NUMBER = re.compile(r"(?<!\w)[+-]?\d+(?:,\d{3})*(?:\.\d+)?(?!\w)")
+NUMERIC_TOKEN = re.compile(r"(?<!\w)[+-]?\w*\d[\w,]*(?:\.\d[\w,]*)*(?!\w)")
 
 
 def _numbers(text: str) -> set[Decimal]:
-    return {Decimal(n.replace(",", "")) for n in NUMBER.findall(text)}
+    return {Decimal(n.rstrip(",").replace(",", "")) for n in NUMERIC_TOKEN.findall(text)
+            if NUMBER.fullmatch(n.rstrip(","))}
 
 
 @dataclass
@@ -141,9 +143,14 @@ def _evidence_problems(text: str, cited: list[dict[str, Any]], company: str, mar
     quote_words = set(re.findall(r"[a-z0-9']+", quotes))
     context = set(re.findall(r"[a-z0-9']+", normalize(company + " " + market)))
     problems = []
-    numbers = _numbers(quotes + " " + company + " " + market)
-    for num in NUMBER.findall(text):
-        if Decimal(num.replace(",", "")) not in numbers:
+    published = quotes + " " + company + " " + market
+    published_tokens = {n.rstrip(",") for n in NUMERIC_TOKEN.findall(normalize(published))}
+    numbers = _numbers(published)
+    for token in NUMERIC_TOKEN.findall(text):
+        num = token.rstrip(",")
+        proven = (Decimal(num.replace(",", "")) in numbers if NUMBER.fullmatch(num)
+                  else normalize(num) in published_tokens)
+        if not proven:
             problems.append("the number %s is not in the cited evidence" % num)
     for word in re.findall(r"[a-z]+", text.lower()):
         if word in NUMBER_WORDS and word not in quote_words and Decimal(NUMBER_WORDS[word]) not in numbers:

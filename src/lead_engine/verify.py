@@ -23,7 +23,7 @@ from .evidence import Page, schema_people, schema_quote, sentences, supported
 from .fetch import Disallowed, Fetcher, FetchError, OffsiteRedirect, host_of
 from .html import EMAIL_RE
 from .http import safe_url
-from .names import canonical_first, split_name, tokens
+from .names import name_key, split_name, tokens
 from .outcome import Advance, Drop, StepError
 
 DEFAULT_ROLES = ["owner", "co-owner", "founder", "co-founder", "proprietor", "president", "ceo", "principal",
@@ -146,6 +146,13 @@ def _person_fact(name: str, role: str, page: Page, quote: str, method: str, role
 
 def find_people(pages: list[Page], roles: list[str], company: str) -> list[Person]:
     role_rx = _role_regex(roles)
+    verbs = "|".join(re.escape(v) for v in sorted(VERB_ROLE, key=len, reverse=True))
+    negated = re.compile(rf"\b(?:not|never|no|isn['\u2019]t|wasn['\u2019]t)\s+"
+                         rf"(?:(?:the|an?|our|your|its|current|actual)\s+)*(?:{role_rx}|{verbs})\b", re.I)
+
+    def rejected_context(text: str) -> bool:
+        return bool(NON_CURRENT.search(text) or negated.search(text))
+
     role_only = re.compile(rf"\b{role_rx}\b{NOT_POSSESSIVE}")
     patterns = _patterns(role_rx)
     name_line = re.compile(rf"^{_NAME}$")
@@ -158,13 +165,13 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
             title = str(node.get("jobTitle") or "")
             role, role_from = (title, "jobTitle") if title else ({"founder": "Founder", "owner": "Owner"}.get(prop, ""),
                                                                  "property")
-            if name and role and role_only.search(role) and not NON_CURRENT.search(role):
+            if name and role and role_only.search(role) and not rejected_context(role):
                 found.append(_person_fact(name, role, page, schema_quote(prop, node), "schema.org", role_from))
         lines = page.lines
         current_text = "\n".join(line for i, line in enumerate(lines)
-                                 if not NON_CURRENT.search(" ".join(lines[max(0, i - 1):i + 2])))
+                                 if not rejected_context(" ".join(lines[max(0, i - 1):i + 2])))
         for sentence in sentences(current_text):
-            if NON_CURRENT.search(sentence):
+            if rejected_context(sentence):
                 continue
             for rx in patterns:
                 for m in rx.finditer(sentence):
@@ -179,7 +186,7 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
         for i, line in enumerate(lines):
             if len(line.split()) > 8 or not role_only.search(line):
                 continue
-            if NON_CURRENT.search(" ".join(lines[max(0, i - 1):i + 2])):
+            if rejected_context(" ".join(lines[max(0, i - 1):i + 2])):
                 continue
             role = role_only.search(line).group(0)
             pair = None
@@ -194,7 +201,7 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
     people: dict[tuple[str, str], Person] = {}
     for f in found:
         v = f["value"]
-        key = (canonical_first(v["first_name"]), " ".join(tokens(v["last_name"])))
+        key = name_key(v["first_name"], v["last_name"])
         p = people.get(key)
         rank = _rank(v["role"])
         if p is None:

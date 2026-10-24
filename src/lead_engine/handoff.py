@@ -21,7 +21,7 @@ from typing import Any
 
 from .fetch import host_of
 from .gate import Suppressions, is_suppressed, load_suppressions
-from .http import HttpError
+from .http import HttpError, safe_url
 from .instantly import API, leads_add_body
 from .store import Store
 
@@ -33,7 +33,7 @@ def lead_payload(lead: dict[str, Any]) -> dict[str, Any]:
         "first_name": d["person"]["first_name"],
         "last_name": d["person"]["last_name"],
         "company_name": lead["company"],
-        "website": lead["website"],
+        "website": safe_url(lead["website"]),
         "personalization": d["opener"]["text"],
         "custom_variables": {
             "role": d["person"]["role"],

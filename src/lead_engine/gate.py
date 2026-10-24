@@ -21,8 +21,9 @@ from typing import Any
 from .evidence import Page, supported
 from .fetch import host_of
 from .html import EMAIL_RE
+from .names import name_key
 from .outcome import Advance, Drop, StepError
-from .verify import DEFAULT_ROLES, find_email, find_people
+from .verify import find_email, find_people
 from .voice import Voice, check_opener
 
 
@@ -72,7 +73,7 @@ def is_suppressed(email: str, site_host: str, s: Suppressions) -> bool:
 
 
 def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, duplicate_of: int | None,
-         now: dt.datetime) -> Advance | Drop:
+         now: dt.datetime, roles: list[str] | None = None) -> Advance | Drop:
     data = dict(lead["data"])
     email = data["email"]["address"]
     if is_suppressed(email, host_of(lead["website"]), suppressions):
@@ -87,14 +88,19 @@ def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, dupl
             raise StepError("fact %s no longer matches its stored page" % fid)
     person_data = data["person"]
     person_facts = [facts[fid] for fid in person_data["fact_ids"]]
-    if (not person_facts or any(f["kind"] != "decision_maker" or any(
-            f["value"].get(k) != person_data[k] for k in ("full_name", "first_name", "last_name"))
-            for f in person_facts)
+    key = name_key(person_data["first_name"], person_data["last_name"])
+    if (not person_facts or any(f["kind"] != "decision_maker" or
+            name_key(f["value"].get("first_name", ""), f["value"].get("last_name", "")) != key for f in person_facts)
+            or not any(all(f["value"].get(k) == person_data[k] for k in ("full_name", "first_name", "last_name"))
+                       for f in person_facts)
             or not any(f["value"].get("role") == person_data["role"] for f in person_facts)):
         raise StepError("person does not match the cited decision-maker facts")
-    people = find_people(pages, [*DEFAULT_ROLES, person_data["role"]], lead["company"])
-    person = next((p for p in people if (p.full_name, p.first_name, p.last_name, p.role) ==
-                   tuple(person_data[k] for k in ("full_name", "first_name", "last_name", "role"))), None)
+    policy = roles if roles is not None else [person_data["role"]]
+    if not policy:
+        raise StepError("decision-maker role policy is empty")
+    people = find_people(pages, policy, lead["company"])
+    person = next((p for p in people if name_key(p.first_name, p.last_name) == key
+                   and p.role == person_data["role"]), None)
     email_fact = facts[data["email"]["fact_id"]]
     if person is None or email_fact["kind"] != "email" or email_fact["value"].get("email") != email:
         raise StepError("person and email do not match their evidence")

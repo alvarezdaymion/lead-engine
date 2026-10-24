@@ -132,9 +132,9 @@ class ClaudeWriter:
             "output_config": {"effort": s["effort"], "format": {"type": "json_schema", "schema": SCHEMA}},
             "messages": [{"role": "user", "content": json.dumps(self.prompt(lead, recent, feedback or []))}],
         }
-        client = self._client()
-        self.calls += 1
         try:
+            client = self._client()
+            self.calls += 1
             if s.get("fallbacks"):
                 resp = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default",
                                                    **kwargs)
@@ -142,7 +142,9 @@ class ClaudeWriter:
                 resp = client.messages.create(**kwargs)
         except Exception as e:
             if _is_api_error(e):  # rate limits, outages, bad keys: every lead would fail the same way
-                raise SharedOutage("model call failed: %s" % e) from None
+                status = getattr(e, "status_code", None)
+                detail = " (HTTP %d)" % status if type(status) is int and 100 <= status <= 599 else ""
+                raise SharedOutage("model call failed: %s%s" % (type(e).__name__, detail)) from None
             raise
         if getattr(resp, "stop_reason", "") == "refusal":
             raise StepError("the model declined to write this opener")
