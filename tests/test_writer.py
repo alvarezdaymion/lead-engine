@@ -57,12 +57,12 @@ def test_a_recent_opening_pushes_the_writer_to_another_template():
     ("specialty", "We specialize in tax preparation."),
     ("specialty", "We specialize in financial reporting."),
     ("specialty", "We specialize in bookkeeping for restaurants and cafes."),
-    ("founded", "Founded in 2012."), ("years", "We have 15 years of experience."),
-    ("award", "Voted Best Bookkeeper in 2025.")])
+    ("founded", "Our firm was founded in 2012."), ("years", "We have 15 years of experience."),
+    ("award", "We were voted Best Bookkeeper in 2025.")])
 def test_default_templates_handle_consecutive_leads_with_the_same_fact(tmp_path, kind, sentence):
     from helpers import Clock, add_site, html_transport, make_engine
     pages = {"https://shop-%d.example.com/" % i:
-             "<p>Pat Example, Owner.</p><p>pat@shop-%d.example.com</p><p>%s</p>" % (i, sentence)
+             "<p>Pat Example, Owner.</p><p>Email Pat Example: pat@shop-%d.example.com</p><p>%s</p>" % (i, sentence)
              for i in range(8)}
     engine = make_engine(tmp_path, Clock(), transport=html_transport(pages))
     for i in range(8):
@@ -178,12 +178,13 @@ def test_model_error_messages_never_reach_persisted_events(tmp_path, clock):
     assert engine.store.get(lead_id)["attempts"] == 0
 
 
-def test_model_initialization_errors_release_the_lead_without_an_attempt(tmp_path, clock, monkeypatch):
-    CredentialsError = type("CredentialsError", (Exception,), {"__module__": "anthropic._exceptions"})
+@pytest.mark.parametrize("error", [FileNotFoundError, ValueError, RuntimeError,
+    type("CredentialsError", (Exception,), {"__module__": "anthropic._exceptions"})])
+def test_model_initialization_errors_release_the_lead_without_an_attempt(tmp_path, clock, monkeypatch, error):
     writer = ClaudeWriter(SETTINGS, load_voice(EXAMPLE))
 
     def unavailable():
-        raise CredentialsError("synthetic-private-key is missing")
+        raise error("synthetic-private-key is missing")
 
     monkeypatch.setattr(writer, "_client", unavailable)
     engine = make_engine(tmp_path, clock, writer=writer)

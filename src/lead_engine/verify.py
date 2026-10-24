@@ -62,7 +62,8 @@ VERB_ROLE = {"founded": "Founder", "co-founded": "Co-founder", "started": "Found
              "opened": "Founder", "launched": "Founder", "owns": "Owner", "owned": "Owner",
              "owned and operated": "Owner", "run": "Owner"}
 NON_CURRENT = re.compile(r"\b(?:former|previous|retired|retiring|late|deceased|ex-owner|ex-president|"
-                         r"stepped down|no longer|passed away|assistant|deputy|vice)\b", re.I)
+                         r"stepped down|no longer|passed away|assistant|deputy|vice|acting|interim)\b", re.I)
+UNCERTAIN = re.compile(r"\b(?:not|never|no|isn't|wasn't|isn’t|wasn’t|used to|on behalf|may|might)\b", re.I)
 
 
 @dataclass
@@ -144,51 +145,76 @@ def _person_fact(name: str, role: str, page: Page, quote: str, method: str, role
     return _fact("decision_maker", value, page, quote, method)
 
 
-def _excluded_people(pages: list[Page], facts: list[dict[str, Any]], negative: re.Pattern[str],
-                     role_rx: str) -> set[tuple[str, str]]:
-    """Link disqualifying roles and statuses to names, including separate team-card lines."""
-    known = {f["value"]["full_name"]: name_key(f["value"]["first_name"], f["value"]["last_name"]) for f in facts}
-    role_only = re.compile(rf"\b{role_rx}\b", re.I)
-    name_line = re.compile(rf"^{_NAME}$")
-    status_tail = re.compile(rf"^(?:[.!?)]|$|(?:{role_rx}|in|from|as|after|since|to|the|an?|our|"
-                             r"works|employed|with|here|for)\b)", re.I)
-    gap = re.compile(rf"(?:[^\w]|{role_rx}|\b(?:is|was|has|have|had|been|now|the|our|an?|and|as|of|to|by|"
-                     r"served|serves|works|worked|became)\b)*", re.I)
+def _other_name(text: str, name: str, company: str = "") -> bool:
+    allowed = {tuple(tokens(value)) for value in (name, company) if value}
+    for match in re.finditer(_NAME, text):
+        words = tokens(match.group())
+        while words and words[0] in NOT_NAME_WORDS:
+            words.pop(0)
+        if len(words) > 1 and tuple(words) not in allowed:
+            return True
+    return False
 
-    def mentions(text: str) -> list[tuple[int, int, tuple[str, str]]]:
-        out = []
-        for match in re.finditer(_NAME, text):
-            name = _clean_name(match.group(0), set())
+
+def _identity_context(text: str, name: str, company: str, role_rx: str) -> bool:
+    without_roles = re.sub(rf"\b{role_rx}\b", "", text)
+    if (UNCERTAIN.search(text) or NON_CURRENT.search(text) or _other_name(without_roles, name, company)
+            or re.search(r"\b(?:client|customer|supplier|testimonial|vendor|partner)\b", without_roles, re.I)):
+        return False
+    return True
+
+
+def _section_allows(page: Page, scope: str, company: str, names: set[str] | None = None) -> bool:
+    for content, heading in page.sections:
+        if normalize(scope) not in normalize(content):
+            continue
+        for name in (names or set()) | {company}:
             if name:
-                out.append((match.start(), match.end(), name_key(*split_name(name))))
-        for name, key in known.items():
-            out.extend((m.start(), m.end(), key) for m in re.finditer(r"\b%s\b" % re.escape(name), text, re.I))
-        return out
+                heading = re.sub(r"\b%s\b" % re.escape(name), "", heading, flags=re.I)
+        if set(tokens(heading)) - NOT_NAME_WORDS - {"history", "leadership", "are", "do", "work"}:
+            return False
+    return True
 
+
+def _affiliation(sentence: str, match: re.Match[str], company: str) -> bool:
+    groups = match.groupdict()
+    if groups.get("verb"):
+        if match.start("name") < match.start("verb"):
+            target = sentence[match.end():]
+        else:
+            return _self_subject(sentence[:match.start()], company)
+    else:
+        if not groups.get("role"):
+            return False
+        target = sentence[match.end("role"):]
+        relation = re.match(r"\s+(?:of|at|for)\s+", target, re.I)
+        if not relation:
+            return True
+        target = target[relation.end():]
+    subjects = [company, "our firm", "the firm", "our company", "the company", "our business", "the business",
+                "our shop", "the shop", "our practice", "the practice"]
+    return any(subject and re.match(re.escape(subject) + r"(?!\w)", target, re.I) for subject in subjects)
+
+
+def _excluded_people(pages: list[Page], facts: list[dict[str, Any]], negative: re.Pattern[str]) -> set[tuple[str, str]]:
+    aliases = {f["value"]["full_name"]: name_key(f["value"]["first_name"], f["value"]["last_name"]) for f in facts}
+    known = set(aliases.values())
     excluded = set()
     for page in pages:
-        lines = page.lines
-        for i, line in enumerate(lines):
-            previous = ""
-            for clause in sentences(line.replace(";", "\n")):
-                named = mentions(clause)
-                for marker in negative.finditer(clause):
-                    if named:
-                        start, end, key = min(named, key=lambda n: max(n[0] - marker.end(), marker.start() - n[1], 0))
-                        between = clause[end:marker.start()] if end <= marker.start() else clause[marker.end():start]
-                        if gap.fullmatch(between):
-                            excluded.add(key)
-                    elif marker.start() == 0 and status_tail.match(clause[marker.end():].lstrip()):
-                        context = previous or (lines[i - 1] if i else "")
-                        if not mentions(context) and role_only.search(context) and i > 1:
-                            context = lines[i - 2]
-                        linked = mentions(context)
-                        if not linked and i + 1 < len(lines) and name_line.fullmatch(lines[i + 1]):
-                            linked = mentions(lines[i + 1])
-                        keys = {n[2] for n in linked}
-                        if len(keys) == 1:
-                            excluded.update(keys)
-                previous = clause
+        cards = [element for element in page.elements if "\n" in element and
+                 re.fullmatch(_NAME, element.split("\n")[0])]
+        for text in page.lines + cards:
+            status = re.sub(r"\b(?:has|employs|hires)\s+(?:an?|the|his|her|their)\s+(?:assistant|deputy)\b",
+                            "employs staff", text, flags=re.I)
+            if not negative.search(status):
+                continue
+            for name, key in aliases.items():
+                if re.search(r"\b%s\b" % re.escape(name), text, re.I):
+                    excluded.add(key)
+            for match in re.finditer(_NAME, text):
+                name = _clean_name(match.group(), set())
+                if name and (key := name_key(*split_name(name))) in known:
+                    excluded.add(key)
     return excluded
 
 
@@ -197,7 +223,7 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
     verbs = "|".join(re.escape(v) for v in sorted(VERB_ROLE, key=len, reverse=True))
     negated = re.compile(rf"\b(?:not|never|no|isn['\u2019]t|wasn['\u2019]t)\s+"
                          rf"(?:(?:the|an?|our|your|its|current|actual)\s+)*(?:{role_rx}|{verbs})\b", re.I)
-    negative = re.compile(NON_CURRENT.pattern + "|" + negated.pattern, re.I)
+    negative = re.compile(NON_CURRENT.pattern + "|" + UNCERTAIN.pattern, re.I)
 
     def rejected_context(text: str) -> bool:
         return bool(NON_CURRENT.search(text) or negated.search(text))
@@ -209,43 +235,43 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
     company_tokens = set(tokens(company))
     found: list[dict[str, Any]] = []
     for page in pages:
-        for prop, node in schema_people(page.jsonld):
+        for prop, node in schema_people(page.jsonld, company):
             name = _clean_name(str(node["name"]), company_tokens)
             title = str(node.get("jobTitle") or "")
             role, role_from = (title, "jobTitle") if title else ({"founder": "Founder", "owner": "Owner"}.get(prop, ""),
                                                                  "property")
-            if name and role and role_only.search(role) and not rejected_context(role):
+            if name and role and role_only.fullmatch(role) and not rejected_context(role):
                 found.append(_person_fact(name, role, page, schema_quote(prop, node), "schema.org", role_from))
-        lines = page.lines
         for sentence in sentences(page.text):
             for rx in patterns:
                 for m in rx.finditer(sentence):
                     name = _clean_name(m.group("name"), company_tokens)
-                    if not name:
+                    if not name or not _identity_context(sentence, name, company, role_rx):
                         continue
                     groups = m.groupdict()
                     role = groups.get("role") or VERB_ROLE.get(" ".join((groups.get("verb") or "").lower().split()), "")
-                    if role and role_only.fullmatch(role):
+                    if (role and role_only.fullmatch(role) and _affiliation(sentence, m, company)
+                            and _section_allows(page, sentence, company, {name})):
                         quote = _crop(sentence, m.start(), m.end())
                         found.append(_person_fact(name, role, page, quote, "text", "text"))
-        for i, line in enumerate(lines):
-            if len(line.split()) > 8 or not role_only.search(line):
+        for element in page.elements:
+            lines = element.split("\n")
+            if len(lines) != 2:
                 continue
-            if rejected_context(line):
-                continue
-            role = role_only.search(line).group(0)
-            pair = None
-            if i > 0 and name_line.match(lines[i - 1]):
-                pair = (lines[i - 1], "%s %s" % (lines[i - 1], line))
-            elif i + 1 < len(lines) and heading_role.match(line) and name_line.match(lines[i + 1]):
-                pair = (lines[i + 1], "%s %s" % (line, lines[i + 1]))
-            if pair:
-                name = _clean_name(pair[0], company_tokens)
-                if name:
-                    found.append(_person_fact(name, role, page, pair[1], "text", "text"))
-    excluded = _excluded_people(pages, found, negative, role_rx)
+            for name, title in (lines, lines[::-1]):
+                role = role_only.search(title)
+                if (not role or not name_line.fullmatch(name) or not heading_role.fullmatch(title)
+                        and not role_only.fullmatch(title)):
+                    continue
+                name = _clean_name(name, company_tokens)
+                if (name and _identity_context(element, name, company, role_rx)
+                        and _section_allows(page, element, company, {name})):
+                    found.append(_person_fact(name, role.group(), page, " ".join(lines), "text", "text"))
+    excluded = _excluded_people(pages, found, negative)
     people: dict[tuple[str, str], Person] = {}
     for f in found:
+        if company:
+            f["subject"] = company
         v = f["value"]
         key = name_key(v["first_name"], v["last_name"])
         if key in excluded:
@@ -266,19 +292,6 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
     return [p for p in ranked if p.rank < 4]
 
 
-def local_parts(first: str, last: str) -> set[str]:
-    f = "".join(tokens(first))
-    last_tokens = tokens(last)
-    la = "".join(last_tokens)
-    if not f or not la:
-        return set()
-    out = {f, la, f + la, f + "." + la, f + "_" + la, f + "-" + la, f[0] + la, f[0] + "." + la, f + la[0],
-           f + "." + la[0], la + f, la + "." + f}
-    if len(last_tokens) > 1:
-        out |= {f + last_tokens[-1], f + "." + last_tokens[-1], f[0] + last_tokens[-1]}
-    return out
-
-
 def on_site_domain(domain: str, host: str) -> bool:
     """The address is on the business's own domain: the site's host, a parent of it, or a subdomain."""
     if "." not in domain or domain in PUBLIC_SUFFIXES:
@@ -286,78 +299,66 @@ def on_site_domain(domain: str, host: str) -> bool:
     return domain == host or host.endswith("." + domain) or domain.endswith("." + host)
 
 
-def _beside_person(context: str, person: Person, others: list[Person]) -> bool:
+def _variants(person: Person) -> set[str]:
+    return {person.full_name} | {f["value"]["full_name"] for f in person.facts}
+
+
+def _contact_binding(context: str, address: str, person: Person, others: list[Person]) -> bool:
     text = EMAIL_RE.sub("", context)
-    if not re.search(r"\b%s\b" % re.escape(person.first_name), text, re.I):
+    if UNCERTAIN.search(text) or NON_CURRENT.search(text):
         return False
-    if any(re.search(r"\b%s\b" % re.escape(other.first_name), text, re.I) for other in others):
+    variants = _variants(person)
+    # Full names disambiguate shared first names; an unproven nickname never supplies a binding.
+    for name in variants:
+        text = re.sub(r"\b%s\b" % re.escape(name), "", text, flags=re.I)
+    if any(_clean_name(m.group(), set()) for m in re.finditer(_NAME, text)):
         return False
-    for match in re.finditer(_NAME, text):
-        name = _clean_name(match.group(0), set())
-        if name and tokens(name) != tokens(person.full_name):
-            return False
-    return True
-
-
-def _contact_conflicts(context: str, person: Person) -> bool:
-    text = EMAIL_RE.sub("", context)
-    key = name_key(person.first_name, person.last_name)
-    for match in re.finditer(_NAME, text):
-        name = _clean_name(match.group(0), set())
-        if name and name_key(*split_name(name)) != key:
-            return True
-    for match in re.finditer(r"(?i:\b(?:payroll (?:clerk|specialist)|assistant|employee|staff member|"
-                             rf"receptionist)\s+)(?P<name>{_NAME}|{_WORD})\b", text):
-        name = _clean_name(match.group("name"), set())
-        if not name or name_key(*split_name(name)) != key:
-            return True
-    return False
-
-
-def _contact_text(context: str, address: str) -> str:
-    clauses = re.split(r";|(?<=[.!?])\s+", context)
-    return next((part.strip() for part in clauses if address.lower() in part.lower()), context)
+    firsts = {split_name(name)[0] for name in variants}
+    other_firsts = {split_name(name)[0] for other in others for name in _variants(other)}
+    if any(re.search(r"\b%s\b" % re.escape(name), text, re.I) for name in other_firsts):
+        return False
+    if re.search(r"\b(?:payroll|clerk|employee|staff|receptionist)\b", text, re.I):
+        return False
+    names = "|".join(re.escape(name) for name in sorted(variants | firsts, key=len, reverse=True))
+    cue = r"(?:email|contact|reach|write to|ask|call or email)"
+    connector = r"(?:directly|answers at|can be reached at|at)"
+    target = re.escape(address)
+    printed = address.lower() in context.lower()
+    ending = target if printed else rf"(?:{cue})?"
+    binding = re.compile(rf"(?:{cue}\s+)?(?:{names})(?:\s+{connector})?\s*[:,]?\s*"
+                         rf"{ending}\s*[.!]?", re.I)
+    scopes = sentences(context) if printed else [" ".join(context.split())]
+    return any(binding.fullmatch(sentence) for sentence in scopes)
 
 
 def find_email(pages: list[Page], person: Person, host: str, allow_free_mail: bool = True,
                others: list[Person] | None = None) -> tuple[dict[str, Any] | None, list[str]]:
-    wanted = local_parts(person.first_name, person.last_name)
-    theirs = {part: o.full_name for o in others or [] for part in local_parts(o.first_name, o.last_name)}
-    best: tuple[tuple[int, int], dict[str, Any]] | None = None
-    rejected: list[str] = []
+    occurrences: dict[str, list[tuple[Page, str, str]]] = {}
     for page in pages:
         for address, context, method in page.emails:
-            context = _contact_text(context, address)
-            local, _, domain = address.partition("@")
-            base = local.split("+", 1)[0]
-            matches_name = base in wanted
-            beside = _beside_person(context, person, others or [])
-            on_site = on_site_domain(domain, host)
-            free = domain in FREE_MAIL
-            if base in SHARED_INBOXES:
-                rejected.append("%s is a shared inbox" % address)
-            elif base in theirs:
-                rejected.append("%s belongs to %s" % (address, theirs[base]))
-            elif _contact_conflicts(context, person):
-                rejected.append("%s has conflicting staff context" % address)
-            elif not on_site and not (free and allow_free_mail):
-                rejected.append("%s is not on the business's domain" % address)
-            elif free and not beside:
-                rejected.append("%s is free mail not printed beside %s" % (address, person.full_name))
-            elif not (matches_name or beside):
-                rejected.append("%s is not tied to %s" % (address, person.full_name))
-            else:
-                binding = "address matches the name" if matches_name else "printed beside the name"
-                if method == "mailto":
-                    quote, how = "mailto:" + address, "mailto"
-                else:
-                    at = context.lower().find(address)
-                    quote, how = _crop(context, max(0, at), max(0, at) + len(address)), "text"
-                fact = _fact("email", {"email": address, "binding": binding}, page, quote, how)
-                rank = (0 if on_site else 1, 0 if matches_name else 1)
-                if best is None or rank < best[0]:
-                    best = (rank, fact)
-    return (best[1] if best else None), list(dict.fromkeys(rejected))
+            occurrences.setdefault(address, []).append((page, context, method))
+    rejected = []
+    candidates = []
+    for address, items in occurrences.items():
+        local, _, domain = address.partition("@")
+        on_site = on_site_domain(domain, host)
+        if local.split("+", 1)[0] in SHARED_INBOXES:
+            reason = "is a shared inbox"
+        elif not on_site and not (domain in FREE_MAIL and allow_free_mail):
+            reason = "is not on the business's domain"
+        elif any(not _contact_binding(context, address, person, others or []) or not _section_allows(
+                page, context, str(person.facts[0].get("subject") or "") if person.facts else "", _variants(person))
+                 for page, context, _ in items):
+            reason = "has ambiguous or conflicting contact evidence for %s" % person.full_name
+        else:
+            page, context, method = items[0]
+            quote = "mailto:" + address if method == "mailto" else context
+            fact = _fact("email", {"email": address, "binding": "printed beside the name"}, page, quote, method)
+            candidates.append((not on_site, fact))
+            continue
+        rejected.append("%s %s" % (address, reason))
+    candidates.sort(key=lambda item: item[0])
+    return (candidates[0][1] if candidates else None), rejected
 
 
 FACT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
@@ -385,8 +386,6 @@ def _phrase(raw: str, limit: int = 60) -> str:
 
 def _self_subject(text: str, company: str) -> bool:
     text = normalize(text).strip(" ,:")
-    if not text or text == "with":
-        return True
     subjects = r"we|i|(?:our|the|this)\s+(?:company|firm|business|shop|practice|team|doors)"
     if company:
         subjects += "|" + re.escape(normalize(company))
@@ -395,16 +394,24 @@ def _self_subject(text: str, company: str) -> bool:
 
 def _business_fact(sentence: str, match: re.Match[str], kind: str, company: str) -> bool:
     prefix = sentence[:match.start()].strip()
-    if re.search(r"\b(?:supplier|client|customer|vendor|partner|competitor|neighbor|employer)\b", prefix, re.I):
+    if UNCERTAIN.search(sentence) or NON_CURRENT.search(sentence):
         return False
+    actor = ""
     founding = re.fullmatch(r"(?:founded|established|opened)\s*(.*?)\s+in\s+\d{4}", match.group(), re.I)
-    if kind == "founded" and founding:
+    if kind == "founded" and founding and founding.group(1).strip():
         target = founding.group(1).strip()
-        if target:
-            if not _self_subject(target, company):
-                return False
-            return _self_subject(prefix, company) or bool(re.fullmatch(_NAME, prefix))
-    return _self_subject(prefix, company)
+        if not _self_subject(target, company):
+            return False
+        if not (_self_subject(prefix, company) or re.fullmatch(_NAME, prefix)):
+            return False
+        actor = prefix
+    elif not _self_subject(prefix, company) and not (kind == "specialty" and not prefix and
+                                                    re.match(r"(?:we|I)\s+speciali[sz]e", match.group(), re.I)):
+        return False
+    subject_text = sentence if kind != "award" else sentence[:match.start()] + sentence[match.end():]
+    if _other_name(subject_text, actor, company):
+        return False
+    return not re.search(r"\b(?:supplier|client|vendor|partner|competitor|neighbor|employer)\b", sentence, re.I)
 
 
 def opener_facts(pages: list[Page], today: dt.date | None = None, *, company: str = "") -> list[dict[str, Any]]:
@@ -415,7 +422,8 @@ def opener_facts(pages: list[Page], today: dt.date | None = None, *, company: st
         for sentence in sentences(page.text):
             for kind, rx in FACT_PATTERNS:
                 m = rx.search(sentence)
-                if not m or not _business_fact(sentence, m, kind, company):
+                if (not m or not _business_fact(sentence, m, kind, company)
+                        or not _section_allows(page, sentence, company)):
                     continue
                 raw = m.group(m.lastindex or 1)
                 if kind == "founded" and not 1900 <= int(raw) <= year_now:
@@ -521,15 +529,15 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
     facts = person.facts + [email] + openers
     for i, f in enumerate(facts, 1):
         f["id"] = "f%d" % i
-    cited = {f["source_url"] for f in facts}
     data = {
+        "evidence_version": 2,
         "person": {"full_name": person.full_name, "first_name": person.first_name, "last_name": person.last_name,
                    "role": person.role, "fact_ids": [f["id"] for f in person.facts]},
         "email": {"address": email["value"]["email"], "fact_id": email["id"]},
         "facts": facts,
         "also_named": ["%s (%s)" % (p.full_name, p.role) for p in people[1:4]],
         "pages_read": read,
-        "pages": [p.to_dict() for p in pages if p.final_url in cited],
+        "pages": [p.to_dict() for p in pages],
     }
     snapshots = [Page.from_dict(p) for p in data["pages"]]
     if not all(supported(f, snapshots, company=lead.get("company", "")) for f in facts):

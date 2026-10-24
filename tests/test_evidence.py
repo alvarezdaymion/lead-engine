@@ -23,8 +23,8 @@ def test_quote_presence_does_not_prove_unrelated_values(kind, value):
 
 
 def test_supported_rechecks_every_opener_kind_and_rejects_changed_values():
-    page = source("Founded in 2012.\nWe have 15 years of experience.\nWe specialize in bookkeeping.\n"
-                  "Voted Best Bookkeeper in 2025.")
+    page = source("Our firm was founded in 2012.\nWe have 15 years of experience.\nWe specialize in bookkeeping.\n"
+                  "We were voted Best Bookkeeper in 2025.")
     facts = opener_facts([page], dt.date(2026, 3, 2))
     assert {f["kind"] for f in facts} == {"founded", "years", "specialty", "award"}
     for fact in facts:
@@ -47,7 +47,7 @@ def test_decision_maker_values_must_match_the_proven_role():
 
 def test_schema_role_values_and_method_must_match_the_node():
     page = source("Team")
-    page.jsonld = [{"@type": "Person", "name": "Pat Example", "jobTitle": "Owner"}]
+    page.jsonld = [{"@type": "Person", "name": "Pat Example", "jobTitle": "Owner", "worksFor": {"name": "Shop"}}]
     fact = find_people([page], ["owner"], "Shop")[0].facts[0]
     assert supported(fact, [page])
     fact["value"]["role"] = "President"

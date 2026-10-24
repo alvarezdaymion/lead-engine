@@ -134,6 +134,11 @@ class ClaudeWriter:
         }
         try:
             client = self._client()
+        except SharedOutage:
+            raise
+        except Exception as e:
+            raise SharedOutage("model initialization failed: %s" % type(e).__name__) from None
+        try:
             self.calls += 1
             if s.get("fallbacks"):
                 resp = client.beta.messages.create(betas=["server-side-fallback-2026-07-01"], fallbacks="default",

@@ -27,6 +27,8 @@ class Parsed:
     links: list[tuple[str, str]] = field(default_factory=list)  # (absolute url, anchor text)
     emails: list[tuple[str, str, str]] = field(default_factory=list)  # (address, context, method)
     jsonld: list[dict] = field(default_factory=list)
+    elements: list[str] = field(default_factory=list)
+    sections: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -49,7 +51,11 @@ class _Parser(HTMLParser):
         self.parts: list[str] = []
         self.title_parts: list[str] = []
         self.links: list[tuple[str, str]] = []
-        self.mailto: list[tuple[str, str]] = []
+        self.mailto: list[tuple[str, str, int | None]] = []
+        self.blocks: list[tuple[str, int, int | None]] = []
+        self._blocks: list[int] = []
+        self.block_headings: list[str] = []
+        self.headings: dict[int, tuple[str, int | None]] = {}
         self.ld_blocks: list[str] = []
         self._skip = 0
         self._ld: list[str] | None = None
@@ -73,6 +79,10 @@ class _Parser(HTMLParser):
             return
         if tag in BLOCK_TAGS:
             self.parts.append("\n")
+            if tag != "br":
+                self._blocks.append(len(self.blocks))
+                self.blocks.append((tag, len(self.parts), None))
+                self.block_headings.append(" / ".join(text for text, _ in self.headings.values()))
         if a.get("data-cfemail"):
             decoded = decode_cfemail(a["data-cfemail"])
             if decoded:
@@ -101,13 +111,28 @@ class _Parser(HTMLParser):
         if tag == "a":
             text = " ".join("".join(self._anchor).split())[:120]
             if self._mail:
-                self.mailto.append((self._mail, text))
+                self.mailto.append((self._mail, text, self._blocks[-1] if self._blocks else None))
             elif self._href is not None:
                 absolute = urljoin(self.base_url, self._href)
                 if absolute.startswith(("http://", "https://")):
                     self.links.append((absolute.split("#", 1)[0], text))
             self._href = self._mail = None
         if tag in BLOCK_TAGS:
+            for i in range(len(self._blocks) - 1, -1, -1):
+                if self.blocks[self._blocks[i]][0] == tag:
+                    if re.fullmatch(r"h[1-6]", tag):
+                        level = int(tag[1])
+                        start = self.blocks[self._blocks[i]][1]
+                        heading = " ".join("".join(self.parts[start:]).split())
+                        self.headings = {n: value for n, value in self.headings.items() if n < level}
+                        self.headings[level] = (heading, self._blocks[i - 1] if i else None)
+                    self.headings = {n: value for n, value in self.headings.items()
+                                     if value[1] not in self._blocks[i:]}
+                    for index in self._blocks[i:]:
+                        name, start, _ = self.blocks[index]
+                        self.blocks[index] = (name, start, len(self.parts))
+                    del self._blocks[i:]
+                    break
             self.parts.append("\n")
 
     def handle_data(self, data: str) -> None:
@@ -152,18 +177,17 @@ def parse_html(body: str, base_url: str) -> Parsed:
     except Exception:  # malformed markup: keep what was parsed
         pass
     lines = clean_lines("".join(p.parts))
+    elements = ["\n".join(clean_lines("".join(p.parts[start:end]))) for _, start, end in p.blocks]
     emails: list[tuple[str, str, str]] = []
-    seen: set[str] = set()
-    for address, anchor in p.mailto:
+    for address, anchor, block in p.mailto:
         address = address.lower()
-        if EMAIL_RE.fullmatch(address) and not address.endswith(FILE_SUFFIXES) and address not in seen:
-            seen.add(address)
-            emails.append((address, anchor, "mailto"))
+        if EMAIL_RE.fullmatch(address) and not address.endswith(FILE_SUFFIXES):
+            context = " ".join(elements[block].split()) if block is not None else anchor
+            emails.append((address, context, "mailto"))
     for line in lines:
         for m in EMAIL_RE.finditer(line):
             address = m.group(0).lower().rstrip(".")
-            if address not in seen and not address.endswith(FILE_SUFFIXES):
-                seen.add(address)
+            if not address.endswith(FILE_SUFFIXES):
                 emails.append((address, line, "text"))
     jsonld: list[dict] = []
     for block in p.ld_blocks:
@@ -174,4 +198,7 @@ def parse_html(body: str, base_url: str) -> Parsed:
             except ValueError:
                 continue
     title = " ".join("".join(p.title_parts).split())
-    return Parsed(title=title, lines=lines, links=p.links, emails=emails, jsonld=jsonld)
+    return Parsed(title=title, lines=lines, links=p.links, emails=emails, jsonld=jsonld,
+                  elements=list(dict.fromkeys(e for e in elements if e and len(e) <= 1000)),
+                  sections=[(e, heading) for e, heading in zip(elements, p.block_headings, strict=True)
+                            if e and heading])

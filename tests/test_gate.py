@@ -57,8 +57,8 @@ def test_evidence_that_no_longer_matches_its_page_fails(written):
     tampered = copy.deepcopy(written)
     for p in tampered["data"]["pages"]:
         p["text"] = p["text"].replace("Dana", "Pat")
-    with pytest.raises(StepError, match="no longer matches"):
-        run_gate(tampered)
+    out = run_gate(tampered)
+    assert isinstance(out, Drop) and out.reason == "unproven_evidence"
 
 
 def test_opener_fact_subject_must_be_the_gated_business(written):
@@ -69,8 +69,8 @@ def test_opener_fact_subject_must_be_the_gated_business(written):
     source = next(p for p in data["pages"] if p["final_url"] == fact["source_url"])
     source["text"] += "\n" + quote
     fact.update(quote=quote, subject="Other Shop")
-    with pytest.raises(StepError):
-        run_gate(tampered)
+    out = run_gate(tampered)
+    assert isinstance(out, Drop) and out.reason == "unproven_evidence"
 
 
 def test_gate_rechecks_the_person_address_relationship(written):
@@ -85,8 +85,8 @@ def test_gate_rechecks_the_person_address_relationship(written):
     email_fact.update(value={"email": "lee.s@example.com", "binding": "printed beside the name"},
                       quote=context, method="text")
     data["email"]["address"] = "lee.s@example.com"
-    with pytest.raises(StepError):
-        run_gate(tampered)
+    out = run_gate(tampered)
+    assert isinstance(out, Drop) and out.reason == "no_direct_email"
 
 
 def test_gate_person_must_match_the_cited_person_facts(written):
@@ -109,7 +109,7 @@ def test_gate_person_must_match_the_cited_person_facts(written):
 def test_gate_preserves_a_configured_specific_role(tmp_path, clock):
     from helpers import html_transport
     transport = html_transport({"https://shop.example.com/": "<p>Pat Example, Senior Principal.</p>"
-                               "<p>Email Pat: pat@example.com</p><p>Founded in 2012.</p>"})
+                               "<p>Email Pat: pat@example.com</p><p>Our firm was founded in 2012.</p>"})
     engine = make_engine(tmp_path, clock, transport=transport, settings={"verify": {"roles": ["senior principal"]}})
     lead_id = add_site(engine.store, "shop.example.com", "Shop")
     engine.tick(discover=False, handoff=False)
@@ -128,9 +128,9 @@ def test_gate_uses_the_configured_role_even_when_a_stronger_role_is_present(tmp_
 
 def test_gate_accepts_individually_proven_nickname_variants(tmp_path, clock):
     site = "https://shop.example.com/"
-    body = ('<script type="application/ld+json">{"@type":"LocalBusiness",'
+    body = ('<script type="application/ld+json">{"@type":"LocalBusiness","name":"Shop",'
             '"founder":{"@type":"Person","name":"Robert Example"}}</script>'
-            '<p>Bob Example, Owner.</p><p>Email Robert: robert@example.com</p><p>Founded in 2012.</p>')
+            '<p>Bob Example, Owner.</p><p>Email Robert: robert@example.com</p><p>Our firm was founded in 2012.</p>')
     engine = make_engine(tmp_path, clock, transport=html_transport({site: body}))
     lead_id = add_site(engine.store, "shop.example.com", "Shop")
     engine.tick(discover=False, handoff=False)

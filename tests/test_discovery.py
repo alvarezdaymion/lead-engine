@@ -99,7 +99,7 @@ def test_website_secrets_are_removed_before_persistence_and_handoff(tmp_path, so
     site = "https://shop.example.com/"
     unsafe = "https://user:synthetic-secret@shop.example.com/?access=synthetic-secret#synthetic-secret"
     engine = make_engine(tmp_path, Clock(), transport=html_transport({site: "<p>Pat Example, Owner.</p>"
-                         "<p>pat@example.com</p><p>Founded in 2012.</p>"}))
+                         "<p>Email Pat Example: pat@example.com</p><p>Our firm was founded in 2012.</p>"}))
     if source == "discovery":
         ids, _ = admit_candidates(engine.store, [Candidate("Shop", unsafe)], suppressions=Suppressions(),
                                    exclude=set(), max_locations=0)

@@ -28,6 +28,8 @@ class Page:
     jsonld: list[dict] = field(default_factory=list)
     truncated: bool = False
     error: str = ""
+    elements: list[str] = field(default_factory=list)
+    sections: list[tuple[str, str]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -35,7 +37,8 @@ class Page:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Page:
         return cls(**{**d, "links": [tuple(x) for x in d.get("links", [])],
-                      "emails": [tuple(x) for x in d.get("emails", [])]})
+                      "emails": [tuple(x) for x in d.get("emails", [])],
+                      "sections": [tuple(x) for x in d.get("sections", [])]})
 
     @property
     def lines(self) -> list[str]:
@@ -70,19 +73,22 @@ def schema_node_matches(node: dict, name: str, role: str = "") -> bool:
     return not role or normalize(str(node.get("jobTitle") or "")) == normalize(role)
 
 
-def schema_people(jsonld: list[dict]) -> list[tuple[str, dict]]:
-    """(property, person node) pairs: founders, employees and members of an organization, and
-    standalone Person nodes."""
+def schema_people(jsonld: list[dict], company: str = "") -> list[tuple[str, dict]]:
+    """People of the named prospect organization, or Person nodes with an explicit worksFor affiliation."""
     out: list[tuple[str, dict]] = []
     for node in jsonld:
         for prop in ("founder", "founders", "employee", "employees", "member", "members", "owner"):
+            if not company or normalize(str(node.get("name") or "")) != normalize(company):
+                continue
             value = node.get(prop)
             for person in value if isinstance(value, list) else [value]:
                 if isinstance(person, dict) and person.get("name"):
                     out.append((prop.rstrip("s"), person))
         types = node.get("@type")
         types = types if isinstance(types, list) else [types]
-        if "Person" in types and node.get("name"):
+        affiliation = node.get("worksFor")
+        if ("Person" in types and node.get("name") and company and isinstance(affiliation, dict)
+                and normalize(str(affiliation.get("name") or "")) == normalize(company)):
             out.append(("person", node))
     return out
 
@@ -104,6 +110,10 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "") -> 
     kind = fact.get("kind")
     value = fact.get("value") or {}
     quote = str(fact.get("quote") or "")
+    subject = str(fact.get("subject") or "")
+    if company and subject and normalize(company) != normalize(subject):
+        return False
+    company = company or subject
     if not isinstance(value, dict) or not value or any(not isinstance(v, str) or not v for v in value.values()):
         return False
     if method not in ("text", "mailto", "schema.org"):
@@ -116,7 +126,8 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "") -> 
             return False
         return any(candidate["value"] == value and candidate["method"] == method
                    and normalize(candidate["quote"]) == normalize(quote)
-                   for person in find_people([page], [role], "") for candidate in person.facts)
+                   for person in find_people(pages, [role], company) for candidate in person.facts
+                   if candidate["source_url"] == page.final_url)
     if kind == "email" and method in ("text", "mailto"):
         address = value.get("email", "")
         if not EMAIL_RE.fullmatch(address) or value.get("binding") not in (
@@ -126,9 +137,6 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "") -> 
             return quote == "mailto:" + address and any(e == address and m == "mailto" for e, _, m in page.emails)
         return address in {m.group(0).lower() for m in EMAIL_RE.finditer(quote)}
     if kind in ("founded", "years", "specialty", "award") and method == "text":
-        subject = str(fact.get("subject") or "")
-        if company and subject and normalize(company) != normalize(subject):
-            return False
         return any(candidate["kind"] == kind and candidate["value"] == value
                    and normalize(candidate["quote"]) == normalize(quote)
                    for candidate in opener_facts([page], company=company or subject))
