@@ -34,6 +34,15 @@ def test_json_ld_is_parsed_and_graphs_are_flattened():
     assert "LocalBusiness" in types and "WebSite" in types
 
 
+def test_escaped_json_ld_and_image_names_that_look_like_addresses():
+    p = parse_html('<script type="application/ld+json">{&quot;@type&quot;: &quot;Person&quot;, '
+                   '&quot;name&quot;: &quot;Pat Example&quot;}</script>'
+                   '<script type="application/ld+json">{"@type": "Person", "name": "Say &quot;hi&quot;"}</script>'
+                   "<p>Files: %s and pat@example.com</p>" % ("logo" + "@" + "2x.png"), BASE)
+    assert [n["name"] for n in p.jsonld] == ["Pat Example", 'Say &quot;hi&quot;']
+    assert [e[0] for e in p.emails] == ["pat@example.com"]
+
+
 def test_an_unclosed_head_does_not_hide_the_body():
     p = parse_html("<html><head><title>T</title><body><p>Visible text</p></body></html>", BASE)
     assert "Visible text" in p.text

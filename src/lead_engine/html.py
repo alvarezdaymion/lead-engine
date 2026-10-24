@@ -17,6 +17,7 @@ BLOCK_TAGS = {
     "label", "button", "dd", "dt", "address",
 }
 EMAIL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
+FILE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js")  # retina names ("@2x.png")
 
 
 @dataclass
@@ -155,20 +156,22 @@ def parse_html(body: str, base_url: str) -> Parsed:
     seen: set[str] = set()
     for address, anchor in p.mailto:
         address = address.lower()
-        if EMAIL_RE.fullmatch(address) and address not in seen:
+        if EMAIL_RE.fullmatch(address) and not address.endswith(FILE_SUFFIXES) and address not in seen:
             seen.add(address)
             emails.append((address, anchor, "mailto"))
     for line in lines:
         for m in EMAIL_RE.finditer(line):
             address = m.group(0).lower().rstrip(".")
-            if address not in seen:
+            if address not in seen and not address.endswith(FILE_SUFFIXES):
                 seen.add(address)
                 emails.append((address, line, "text"))
     jsonld: list[dict] = []
     for block in p.ld_blocks:
-        try:
-            _flatten_ld(json.loads(unescape(block.strip()) or "null"), jsonld)
-        except ValueError:
-            continue
+        for text in (block.strip(), unescape(block.strip())):  # some sites HTML-escape their JSON-LD
+            try:
+                _flatten_ld(json.loads(text or "null"), jsonld)
+                break
+            except ValueError:
+                continue
     title = " ".join("".join(p.title_parts).split())
     return Parsed(title=title, lines=lines, links=p.links, emails=emails, jsonld=jsonld)
