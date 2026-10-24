@@ -23,6 +23,8 @@ Run `uv run lead-engine init` to create `lead-engine.toml`, `voice.toml` and `su
 
 Verification and the gate use the same configured role list and the exact allowlist in README's evidence rules. Review those forms with the owner before choosing markets: partial biographies, separate name/title cards, first-name contacts and extra personal clauses do not qualify. Schema proof requires a Person with an explicit jobTitle and worksFor naming the prospect. Every contact occurrence must use an individually proven full name, and a line break cannot hide extra text. Opener facts need the documented full sentences, finite specialty/award phrases and the market's exact place name. An unsupported sentence repeating a proven full name makes that person's eligibility unproven. Do not loosen extraction to raise volume. All fetched snapshots are retained; the gate and hand-off reject legacy or incomplete evidence with `incomplete_evidence`. Re-qualify stranded leads from fresh backlog reads. Website credentials, query strings and fragments are removed before persistence, export and hand-off.
 
+Inline formatting preserves complete addresses and sentences, and direct parent text is checked alongside leaf blocks. Schema names use collapsed whitespace while retaining their original quotes. A business named after its owner follows the same identity templates. Host comparisons ignore capitalization, a leading `www.` and ports consistently during research and replay.
+
 Done when `uv run --env-file .env lead-engine check` prints "Config OK" and the number of searches you agreed.
 
 ## 3. Voice and suppressions

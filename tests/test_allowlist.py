@@ -7,7 +7,8 @@ from helpers import Clock, add_site, html_transport, make_engine
 
 from lead_engine.evidence import Page, supported
 from lead_engine.handoff import run_handoff
-from lead_engine.outcome import Advance
+from lead_engine.html import parse_html
+from lead_engine.outcome import Advance, Drop
 from lead_engine.verify import find_people, opener_facts
 
 SITE = "https://shop.example.com/"
@@ -16,9 +17,11 @@ CONTACT = "<p>Email Pat Example: pat@example.com</p>"
 FACT = "<p>Our firm was founded in 2012.</p>"
 
 
-def pipeline(tmp_path, identity=IDENTITY, contact=CONTACT, fact=FACT, stop=False):
-    engine = make_engine(tmp_path, Clock(), transport=html_transport({SITE: identity + contact + fact}))
-    ident = add_site(engine.store, "shop.example.com", "Shop")
+def pipeline(tmp_path, identity=IDENTITY, contact=CONTACT, fact=FACT, stop=False, *,
+             host="shop.example.com", company="Shop"):
+    site = "https://%s/" % host
+    engine = make_engine(tmp_path, Clock(), transport=html_transport({site: identity + contact + fact}))
+    ident = add_site(engine.store, host, company)
     if stop:
         for _ in range(2):
             out = engine.step(engine.store.get(ident))
@@ -35,6 +38,64 @@ def test_exact_identity_forms_and_gate_replay(tmp_path, text):
     engine, lead = pipeline(tmp_path, identity="<p>%s.</p>" % text, stop=True)
     out = engine.step(lead)
     assert isinstance(out, Advance) and out.stage == "ready"
+
+
+@pytest.mark.parametrize("address", ["pat@<span>example.com</span>", "<strong>pat</strong>@example.com"])
+def test_inline_contacts_qualify_and_replay_from_serialized_pages(tmp_path, address):
+    _, lead = pipeline(tmp_path, contact="<p>Email Pat Example: %s</p>" % address)
+    assert lead["stage"] == "ready"
+    pages = [Page.from_dict(p) for p in lead["data"]["pages"]]
+    assert all(supported(fact, pages, company="Shop", market="Cedar Hollow, OR")
+               for fact in lead["data"]["facts"])
+
+
+def test_inline_conflicting_occurrence_rejects_an_otherwise_proven_address(tmp_path):
+    contact = CONTACT + "<p>Email Lee Sample: pat@<span>example.com</span></p>"
+    _, lead = pipeline(tmp_path, contact=contact)
+    assert (lead["stage"], lead["reason"]) == ("dropped", "no_direct_email")
+
+
+@pytest.mark.parametrize("tag", ["div", "section", "body"])
+def test_parent_direct_text_supplies_complete_identity_and_fact_sentences(tmp_path, tag):
+    identity = "<%s>Pat <strong>Example</strong>, Owner.<p>Contact details follow.</p></%s>" % (tag, tag)
+    fact = "<div>Our firm was <em>founded</em> in 2012.<p>Our story.</p></div>"
+    _, lead = pipeline(tmp_path, identity=identity, fact=fact)
+    assert lead["stage"] == "ready"
+
+
+@pytest.mark.parametrize("extra", [
+    "<div>Pat <b>Example</b> retired.<p>Contact details follow.</p></div>",
+    "<body><p>Contact details follow.</p>Pat Example retired.</body>",
+])
+def test_parent_direct_text_repeating_the_owner_invalidates_identity(tmp_path, extra):
+    _, lead = pipeline(tmp_path, identity=IDENTITY + extra)
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
+
+
+@pytest.mark.parametrize("extra", [
+    "<p>Email Lee Sample: pat@<span>example.com</span></p>",
+    "<div>Pat Example retired.<p>Contact details follow.</p></div>",
+])
+def test_gate_rejects_saved_inline_conflicts_and_direct_parent_assertions(tmp_path, extra):
+    engine, lead = pipeline(tmp_path, stop=True)
+    parsed = parse_html(IDENTITY + CONTACT + FACT + extra, SITE)
+    lead["data"]["pages"][0].update(text=parsed.text, elements=parsed.elements, emails=parsed.emails,
+                                    sections=parsed.sections, quotations=parsed.quotations)
+    out = engine.step(lead)
+    assert isinstance(out, Drop) and out.reason == "unproven_evidence"
+
+
+@pytest.mark.parametrize("host", ["SHOP.EXAMPLE.COM", "shop.example.com:443", "www.SHOP.EXAMPLE.COM:443"])
+def test_research_and_gate_use_the_same_normalized_host(tmp_path, host):
+    _, lead = pipeline(tmp_path, host=host)
+    assert (lead["stage"], lead["attempts"], lead["last_error"]) == ("ready", 0, "")
+
+
+@pytest.mark.parametrize("text", ["Pat Example, Owner", "Pat Example - Owner", "Owner: Pat Example",
+    "Pat Example is the owner of Pat Example", "Pat Example is our owner", "Meet Pat Example, our owner"])
+def test_all_identity_forms_allow_a_company_named_after_its_owner(tmp_path, text):
+    _, lead = pipeline(tmp_path, identity="<p>%s.</p>" % text, company="Pat Example")
+    assert lead["stage"] == "ready"
 
 
 @pytest.mark.parametrize("tail", [" until 2020", " from 2001 to 2020", " or CEO", "?", ", has an assistant",
@@ -141,6 +202,20 @@ def test_schema_requires_person_title_and_direct_business_affiliation(tmp_path):
         altered.pop(field)
         page = Page(SITE, SITE, 200, True, jsonld=[altered])
         assert find_people([page], ["owner"], "Shop") == []
+
+
+@pytest.mark.parametrize("name", ["Pat  Example", " Pat Example ", "Pat\tExample", "Pat\nExample"])
+def test_schema_name_whitespace_normalizes_without_changing_the_original_quote(tmp_path, name):
+    node = {"@type": "Person", "name": name, "jobTitle": "Owner", "worksFor": {"name": "Shop"}}
+    identity = '<script type="application/ld+json">%s</script>' % json.dumps(node)
+    _, lead = pipeline(tmp_path, identity=identity)
+    assert lead["stage"] == "ready"
+    assert lead["data"]["person"]["full_name"] == "Pat Example"
+    fact = next(f for f in lead["data"]["facts"] if f["kind"] == "decision_maker")
+    assert json.dumps(name) in fact["quote"]
+    pages = [Page.from_dict(p) for p in lead["data"]["pages"]]
+    assert pages[0].jsonld[0]["name"] == name
+    assert supported(fact, pages, company="Shop")
 
 
 @pytest.mark.parametrize("body", [

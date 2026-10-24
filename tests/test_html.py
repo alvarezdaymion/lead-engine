@@ -1,3 +1,5 @@
+import pytest
+
 from lead_engine.html import decode_cfemail, parse_html
 
 BASE = "https://shop.example.com/about"
@@ -51,3 +53,41 @@ def test_an_unclosed_head_does_not_hide_the_body():
 def test_broken_markup_still_yields_text():
     p = parse_html("<div><p>Open <b>tags <i>everywhere", BASE)
     assert "Open tags everywhere" in p.text
+
+
+@pytest.mark.parametrize("address", [
+    "pat@<span>example.com</span>",
+    "<strong>pat</strong>&#64;example.com",
+    "pa<span>t@ex</span>ample.com",
+    "pat@ex<!-- formatting -->ample.com",
+])
+def test_inline_address_fragments_keep_every_occurrence_and_full_context(address):
+    parsed = parse_html("<p>Email Pat Example: pat@example.com</p>"
+                        "<p>Email Lee Sample: %s</p>" % address, BASE)
+    assert parsed.emails == [("pat@example.com", "Email Pat Example: pat@example.com", "text"),
+                             ("pat@example.com", "Email Lee Sample: pat@example.com", "text")]
+
+
+def test_direct_parent_text_keeps_boundaries_headings_and_quotations():
+    parsed = parse_html("<body>Intro.<section><h2>Our team</h2>Pat <b>Example</b>, Owner."
+                        "<p>Lee Sample, CEO.</p>Pat Example retired.</section>"
+                        "<blockquote>Pat Example, Owner.<p>Quoted biography.</p></blockquote></body>", BASE)
+    assert parsed.elements == ["Intro.", "Our team", "Pat Example, Owner.", "Lee Sample, CEO.",
+                               "Pat Example retired.", "Quoted biography."]
+    assert ("Pat Example, Owner.", "Our team") in parsed.sections
+    assert ("Pat Example retired.", "Our team") in parsed.sections
+    assert parsed.quotations == ["Pat Example, Owner. Quoted biography."]
+
+
+def test_direct_text_never_joins_across_child_blocks():
+    parsed = parse_html("<div>Pat Example<p>Lee Sample</p>, Owner.</div>"
+                        "<div>Email Pat Example: pat@<p>example.com</p></div>", BASE)
+    assert parsed.elements == ["Pat Example", "Lee Sample", ", Owner.", "Email Pat Example: pat@", "example.com"]
+    assert parsed.emails == []
+
+
+def test_repeated_addresses_in_one_element_keep_the_complete_text():
+    parsed = parse_html("<p>Email Pat Example: pat@example.com<br>"
+                        "Email Pat Example: pat@<b>example.com</b></p>", BASE)
+    context = "Email Pat Example: pat@example.com Email Pat Example: pat@example.com"
+    assert parsed.emails == [("pat@example.com", context, "text")] * 2

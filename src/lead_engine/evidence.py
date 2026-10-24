@@ -124,6 +124,7 @@ def schema_quote(prop: str, person: dict) -> str:
 def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "", market: str = "",
               roles: list[str] | None = None) -> bool:
     """Whether a fact is still proven by the stored page it cites."""
+    from .fetch import host_of
     from .html import EMAIL_RE
     from .verify import DEFAULT_ROLES, OPENER_KINDS, find_email, find_people, opener_facts
 
@@ -159,7 +160,7 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "", mar
             return False
         filtered = [replace(p, emails=[e for e in p.emails if e[0] == address]) for p in pages]
         for person in find_people(pages, roles if roles is not None else DEFAULT_ROLES, company):
-            candidate, _ = find_email(filtered, person, page.final_url.split("/")[2])
+            candidate, _ = find_email(filtered, person, host_of(page.final_url))
             if candidate and all(candidate[key] == fact.get(key) for key in ("value", "quote", "method", "source_url")):
                 return True
         return False

@@ -71,7 +71,7 @@ a failed step: same stage, attempt + 1, retry after backoff --> retired (reason)
 
 Extraction uses a fixed allowlist, and the gate replays the same functions on all stored snapshots. There is no role inference or partial-phrase extraction. Text outside these forms cannot supply evidence.
 
-Whitespace is collapsed and en/em dashes are folded to `-`. A name is exactly two or three capitalized ASCII words (`Pat Example`, `Pat Alex Example`); initials, particles and apostrophes are outside this grammar. Role and business comparisons ignore case. A business must match the lead's company exactly after whitespace and case normalization. No extra clause, number, question, alternative or qualifier may be appended. A single final period is optional for identity and text-contact forms.
+Inline text is joined within each block before matching sentences and addresses. Direct text in a parent element is kept as its own block; child blocks separate adjacent runs, so separate cards are never joined. Whitespace is collapsed and en/em dashes are folded to `-`. A name is exactly two or three capitalized ASCII words (`Pat Example`, `Pat Alex Example`); initials, particles and apostrophes are outside this grammar. Role and business comparisons ignore case. A business must match the lead's company exactly after whitespace and case normalization. A company may have the same name as its owner. No extra clause, number, question, alternative or qualifier may be appended. A single final period is optional for identity and text-contact forms.
 
 **Decision-maker text** must be one whole sentence or one innermost block element matching one of these six forms:
 
@@ -86,7 +86,7 @@ Whitespace is collapsed and en/em dashes are folded to `-`. A name is exactly tw
 
 `<Role>` must be in `[verify] roles`. Separate name/title cards are not joined. Independent sentences are checked separately: `Pat Example, Owner. Lee Sample retired.` still proves Pat's role. If an unsupported sentence repeats a proven full name, that person's eligibility is unproven, including descriptions of retirement or of having an assistant. Those descriptions are not interpreted or repaired. Each merged nickname variant must have its own complete proof; the strongest configured role wins.
 
-**Schema** accepts only a Person object with exactly `@type`, `name`, `jobTitle` and `worksFor`: `{"@type":"Person","name":"Pat Example","jobTitle":"Owner","worksFor":{"name":"Shop"}}`. `worksFor` contains exactly the prospect's `name`. The same name grammar and configured role list apply. Such a Person may be nested inside an organization, but founder/owner/employee properties alone never imply a role or affiliation.
+**Schema** accepts only a Person object with exactly `@type`, `name`, `jobTitle` and `worksFor`: `{"@type":"Person","name":"Pat Example","jobTitle":"Owner","worksFor":{"name":"Shop"}}`. `worksFor` contains exactly the prospect's `name`. The same name grammar, collapsed name whitespace and configured role list apply; the original schema quote is preserved. Such a Person may be nested inside an organization, but founder/owner/employee properties alone never imply a role or affiliation.
 
 **Addresses** must match one complete contact element:
 
@@ -95,7 +95,7 @@ Whitespace is collapsed and en/em dashes are folded to `-`. A name is exactly tw
 - `<Name> <email>`
 - A mailto link whose complete enclosing element text is exactly `<Name>` or `Email <Name>`, without a final period.
 
-The full name must be an individually proven decision-maker spelling. First names and address patterns never bind a contact. The displayed `Email` prefix and names use the spelling shown above. A paragraph or other innermost block is one element; inline formatting and `<br>` remain part of its text. Extra text before or after a line break rejects the contact. Every occurrence of an address is retained and checked; one invalid occurrence rejects that address. The address must also be on the business's domain, or an allowed free-mail domain, and cannot be a shared inbox.
+The full name must be an individually proven decision-maker spelling. First names and address patterns never bind a contact. The displayed `Email` prefix and names use the spelling shown above. A paragraph or other innermost block is one element; inline formatting and `<br>` remain part of its text. Extra text before or after a line break rejects the contact. Every occurrence of an address is retained and checked, including addresses split across inline tags; one invalid occurrence rejects that address. The address must also be on the business's domain, or an allowed free-mail domain, and cannot be a shared inbox. Research, snapshot replay and the gate use the same hostname normalization: lowercase, without a leading `www.` or port.
 
 **Opener facts** require one complete sentence, including its final period. Subject and fixed-phrase comparisons ignore case. `<Subject>` is only `We`, `Our firm`, `Our shop`, `Our company`, `Our team` or the prospect's exact company name.
 
@@ -112,7 +112,7 @@ Years are four digits from 1900 through the current year. `<Place>` must equal t
 
 Section headings must be exactly the prospect's name, a proven full person name for identity/contact evidence, or one of: `About`, `About us`, `Our team`, `Meet the team`, `Team`, `Contact`, `Contact us`, `Our story`, `History`, `Leadership`, `Services`. Each enclosing heading must qualify. Quotes inside `blockquote` or `q` never supply evidence.
 
-Every fact keeps its source URL, method and complete quote. Every fetched snapshot is retained, including leaf boundaries, section headings, quotations and repeated contacts. Verification checks serialized snapshots before checkpointing. The gate and both hand-off modes require evidence version 3 and a complete, valid snapshot manifest; legacy ready leads are dropped with `incomplete_evidence` before export or POST. Re-qualify stranded leads with fresh backlog reads. Unsupported identities, contacts and facts drop with a reason instead of consuming repair attempts; unreadable pages retry. `lead-engine export` writes retained facts to CSV.
+Every fact keeps its source URL, method and complete quote. Every fetched snapshot is retained, including leaf and direct parent text boundaries, section headings, quotations and repeated contacts. Verification checks serialized snapshots before checkpointing. The gate and both hand-off modes require evidence version 3 and a complete, valid snapshot manifest; legacy ready leads are dropped with `incomplete_evidence` before export or POST. Re-qualify stranded leads with fresh backlog reads. Unsupported identities, contacts and facts drop with a reason instead of consuming repair attempts; unreadable pages retry. `lead-engine export` writes retained facts to CSV.
 
 Existing `voice.toml` files need the `serving` templates and the updated award placeholders (`{award}`, `{year}`) from the example voice file. Years-of-experience facts are no longer extracted.
 

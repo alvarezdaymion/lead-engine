@@ -86,7 +86,7 @@ def _identity(text: str, roles: list[str], company: str) -> tuple[str, str] | No
         forms.append(rf"{name} (?i:is the) {title} (?i:of {re.escape(surface(company))})")
     for form in forms:
         match = re.fullmatch(form + r"\.?", surface(text))
-        if match and normalize(match["name"]) != normalize(company):
+        if match:
             return match["name"], match["role"]
     return None
 
@@ -124,6 +124,8 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
     for page in pages:
         for prop, node in schema_people(page.jsonld, company):
             name, title = node.get("name"), node.get("jobTitle")
+            if isinstance(name, str):
+                name = surface(name)
             if (isinstance(name, str) and re.fullmatch(NAME, name) and isinstance(title, str)
                     and normalize(title) in {normalize(r) for r in roles}):
                 found.append(_person_fact(name, title, page, schema_quote(prop, node), "schema.org", company))

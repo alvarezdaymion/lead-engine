@@ -54,10 +54,9 @@ class _Parser(HTMLParser):
         self.links: list[tuple[str, str]] = []
         self.mailto: list[tuple[str, str, int | None]] = []
         self.blocks: list[tuple[str, int, int | None]] = []
-        self.block_children: list[bool] = []
-        self.text_locations: list[tuple[int, int | None]] = []
+        self.text_blocks: list[tuple[int | None, str, list[str]]] = []
+        self._text_block: list[str] | None = None
         self._blocks: list[int] = []
-        self.block_headings: list[str] = []
         self.headings: dict[int, tuple[str, int | None]] = {}
         self.ld_blocks: list[str] = []
         self._skip = 0
@@ -66,6 +65,14 @@ class _Parser(HTMLParser):
         self._href: str | None = None
         self._mail: str | None = None
         self._anchor: list[str] = []
+
+    def _append_text(self, text: str) -> None:
+        self.parts.append(text)
+        if self._text_block is None:
+            self._text_block = []
+            self.text_blocks.append((self._blocks[-1] if self._blocks else None,
+                                     " / ".join(text for text, _ in self.headings.values()), self._text_block))
+        self._text_block.append(text)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         a = {k: v or "" for k, v in attrs}
@@ -81,19 +88,17 @@ class _Parser(HTMLParser):
             self._skip += 1
             return
         if tag in BLOCK_TAGS:
-            self.parts.append("\n")
-            if tag != "br":
-                if self._blocks:
-                    self.block_children[self._blocks[-1]] = True
+            if tag == "br":
+                self._append_text("\n")
+            else:
+                self._text_block = None
+                self.parts.append("\n")
                 self._blocks.append(len(self.blocks))
                 self.blocks.append((tag, len(self.parts), None))
-                self.block_children.append(False)
-                self.block_headings.append(" / ".join(text for text, _ in self.headings.values()))
         if a.get("data-cfemail"):
             decoded = decode_cfemail(a["data-cfemail"])
             if decoded:
-                self.text_locations.append((len(self.parts), self._blocks[-1] if self._blocks else None))
-                self.parts.append(" %s " % decoded)
+                self._append_text(" %s " % decoded)
         if tag == "a":
             href = a.get("href", "").strip()
             self._anchor = []
@@ -124,7 +129,10 @@ class _Parser(HTMLParser):
                 if absolute.startswith(("http://", "https://")):
                     self.links.append((absolute.split("#", 1)[0], text))
             self._href = self._mail = None
-        if tag in BLOCK_TAGS:
+        if tag == "br":
+            self._append_text("\n")
+        elif tag in BLOCK_TAGS:
+            self._text_block = None
             for i in range(len(self._blocks) - 1, -1, -1):
                 if self.blocks[self._blocks[i]][0] == tag:
                     if re.fullmatch(r"h[1-6]", tag):
@@ -151,8 +159,7 @@ class _Parser(HTMLParser):
             return
         if self._skip:
             return
-        self.text_locations.append((len(self.parts), self._blocks[-1] if self._blocks else None))
-        self.parts.append(data)
+        self._append_text(data)
         if self._href is not None or self._mail is not None:
             self._anchor.append(data)
 
@@ -185,19 +192,20 @@ def parse_html(body: str, base_url: str) -> Parsed:
     except Exception:  # malformed markup: keep what was parsed
         pass
     lines = clean_lines("".join(p.parts))
-    elements = ["\n".join(clean_lines("".join(p.parts[start:end]))) for _, start, end in p.blocks]
-    leaves = [i for i, has_children in enumerate(p.block_children) if not has_children and elements[i]]
+    elements = [" ".join("".join(p.parts[start:end]).split()) for _, start, end in p.blocks]
+    scopes = [(block, heading, " ".join("".join(parts).split()))
+              for block, heading, parts in p.text_blocks if "".join(parts).strip()]
     emails: list[tuple[str, str, str]] = []
     for address, anchor, block in p.mailto:
         address = address.lower()
         if EMAIL_RE.fullmatch(address) and not address.endswith(FILE_SUFFIXES):
             context = " ".join(elements[block].split()) if block is not None else anchor
             emails.append((address, context, "mailto"))
-    for position, block in p.text_locations:
-        for m in EMAIL_RE.finditer(p.parts[position]):
+    for block, _, text in scopes:
+        for m in EMAIL_RE.finditer(text):
             address = m.group(0).lower().rstrip(".")
             if not address.endswith(FILE_SUFFIXES):
-                context = elements[block] if block is not None else "\n".join(lines)
+                context = elements[block] if block is not None else "".join(p.parts)
                 emails.append((address, " ".join(context.split()), "text"))
     jsonld: list[dict] = []
     for block in p.ld_blocks:
@@ -209,6 +217,6 @@ def parse_html(body: str, base_url: str) -> Parsed:
                 continue
     title = " ".join("".join(p.title_parts).split())
     return Parsed(title=title, lines=lines, links=p.links, emails=emails, jsonld=jsonld,
-                  elements=list(dict.fromkeys(elements[i] for i in leaves)),
-                  sections=[(elements[i], p.block_headings[i]) for i in leaves if p.block_headings[i]],
+                  elements=list(dict.fromkeys(text for _, _, text in scopes)),
+                  sections=[(text, heading) for _, heading, text in scopes if heading],
                   quotations=[elements[i] for i, (tag, _, _) in enumerate(p.blocks) if tag in {"blockquote", "q"}])
