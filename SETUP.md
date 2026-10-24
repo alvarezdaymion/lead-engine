@@ -27,6 +27,8 @@ Only the fixed evidence blocks and plain inline children listed in README qualif
 
 Proven plain full-name headings and supported company facts do not disqualify an otherwise proven person. Each ancestry heading retains its complete string and eligibility flag; ineligible headings cannot authorize evidence beneath them. The document root is scanned as an implicit block even when html/body tags are absent. Snapshots missing `text_scan_version = 2`, `http_complete = true`, complete rejected text or heading eligibility require fresh qualification. Responses exceeding the fetch cap, disagreeing with Content-Length or carrying partial ranges are unreadable and retry. Oversized, partial or truncated robots.txt blocks crawling with a retry before any page request. The gate and both hand-off modes reject incomplete snapshots and replay required facts; live batches repeat that check immediately before the request. CSV role evidence must prove the exported role for that person; a missing matching fact stops export.
 
+Opening a heading clears the preceding section at the same or deeper level before recording the heading's own text, while preserving higher-level parents. HTTP length validation accepts surrounding ASCII spaces and tabs, then requires an exact decimal body length. API success and error responses have a separate fixed 1,000,000-byte limit enforced during reading and before JSON parsing; oversized responses fail without accepting their contents. An uncertain external write still requires reconciliation rather than resubmission.
+
 Done when `uv run --env-file .env lead-engine check` prints "Config OK" and the number of searches you agreed.
 
 ## 3. Voice and suppressions

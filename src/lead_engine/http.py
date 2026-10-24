@@ -19,6 +19,7 @@ from .errors import InputError, SafeError, diagnostic
 Transport = Callable[[str, str, dict[str, str], bytes | None, float], tuple[int, bytes]]
 
 USER_AGENT = "lead-engine/%s (+https://github.com/alvarezdaymion/lead-engine)" % __version__
+MAX_API_RESPONSE_BYTES = 1_000_000
 
 
 class HttpError(SafeError, RuntimeError):
@@ -77,7 +78,10 @@ def response_complete(headers: dict[str, str], body: bytes, status: int = 200) -
     declared = headers.get("content-length")
     if declared is None:
         return True
-    if not isinstance(declared, str) or not declared.isascii() or not declared.isdecimal():
+    if not isinstance(declared, str):
+        return False
+    declared = declared.strip(" \t")
+    if not declared.isascii() or not declared.isdecimal():
         return False
     try:
         return int(declared) == len(body)
@@ -86,7 +90,9 @@ def response_complete(headers: dict[str, str], body: bytes, status: int = 200) -
 
 
 def _read_response(response: Any, status: int) -> bytes:
-    body = response.read()
+    body = response.read(MAX_API_RESPONSE_BYTES + 1)
+    if len(body) > MAX_API_RESPONSE_BYTES:
+        raise HttpError("API response exceeded the size limit")
     if not response_complete(response_headers(response.headers), body, status):
         raise HttpError("incomplete HTTP response")
     return body
@@ -104,7 +110,8 @@ def urllib_transport(method: str, url: str, headers: dict[str, str], body: bytes
         with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as resp:
             return resp.status, _read_response(resp, resp.status)
     except urllib.error.HTTPError as e:
-        return e.code, _read_response(e, e.code)
+        with e:
+            return e.code, _read_response(e, e.code)
 
 
 class Http:
@@ -124,6 +131,8 @@ class Http:
             raise HttpError("%s failed: %s" % (where, diagnostic(e))) from None
         if type(status) is not int or not 100 <= status <= 599:
             raise HttpError("%s returned an invalid HTTP status" % where)
+        if len(raw) > MAX_API_RESPONSE_BYTES:
+            raise HttpError("%s exceeded the API response size limit" % where)
         if status in (206, 226):
             raise HttpError("%s returned an incomplete HTTP response" % where)
         try:

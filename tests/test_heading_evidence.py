@@ -136,3 +136,32 @@ def test_handoff_drops_unreplayable_heading_metadata_before_any_write(tmp_path, 
                       suppression_file=suppression)
     assert not calls and not out.get("would_add")
     assert engine.store.get(lead["id"])["reason"] == "incomplete_evidence"
+
+
+@pytest.mark.parametrize("previous,new", [("h2", "h1"), ("h2", "h2"), ("h1", "h1")])
+@pytest.mark.parametrize("kind", ["identity", "contact"])
+def test_new_heading_templates_discard_finished_sibling_ancestry_during_replay(tmp_path, previous, new, kind):
+    heading = "Pat Example, Owner." if kind == "identity" else "Email Pat Example: pat@example.com"
+    body = IDENTITY if kind == "contact" else ""
+    body += "<%s>Clients</%s><%s>%s</%s>" % (previous, previous, new, heading, new)
+    body += "<h1>Contact</h1>" + CONTACT + "<h1>Services</h1>" + FACT
+    engine, lead = pipeline(tmp_path, body, stop=True)
+    snapshot = Page.from_dict(json.loads(json.dumps(lead["data"]["pages"][0])))
+    assert all(supported(fact, [snapshot], company="Shop", market=lead["market"])
+               for fact in lead["data"]["facts"])
+    out = engine.step(lead)
+    assert isinstance(out, Advance) and out.stage == "ready"
+
+
+@pytest.mark.parametrize("heading,parents", [("Pat Example, Owner.", [("About", True)]),
+                                            ("Our team", [("About", True)])])
+def test_opening_heading_clears_its_level_before_recording_text(heading, parents):
+    parsed = parse_html("<h1>About</h1><h2>Clients</h2><h3>Other Shop</h3><h2>%s</h2>" % heading, SITE)
+    assert (heading, parents) in parsed.sections
+
+
+def test_heading_templates_still_require_their_genuine_parent_section(tmp_path):
+    body = "<h1>Other Shop</h1><h2>Pat Example, Owner.</h2><h1>Contact</h1>" + CONTACT
+    body += "<h1>Services</h1>" + FACT
+    _, lead = pipeline(tmp_path, body)
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")

@@ -109,6 +109,8 @@ class _Parser(HTMLParser):
             return
         if self._skip:
             return
+        if tag in HEADING_TAGS:
+            self.headings = {n: value for n, value in self.headings.items() if n < int(tag[1])}
         if tag == "br":
             self._append_text("\n")
         elif tag not in INLINE_TAGS:
