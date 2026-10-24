@@ -55,6 +55,42 @@ def test_inline_conflicting_occurrence_rejects_an_otherwise_proven_address(tmp_p
     assert (lead["stage"], lead["reason"]) == ("dropped", "no_direct_email")
 
 
+@pytest.mark.parametrize("tag", ["q", "cite"])
+def test_inline_qualifiers_cannot_detach_from_the_identity_claim(tmp_path, tag):
+    identity = "<p>Pat Example, Owner <%s>until 2020</%s>.</p>" % (tag, tag)
+    _, lead = pipeline(tmp_path, identity=identity)
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
+
+
+@pytest.mark.parametrize("tag", ["q", "cite"])
+def test_gate_rejects_inline_qualified_identity_from_saved_snapshots(tmp_path, tag):
+    engine, lead = pipeline(tmp_path, identity="<p>Pat Example, Owner</p>", stop=True)
+    parsed = parse_html("<p>Pat Example, Owner <%s>until 2020</%s>.</p>" % (tag, tag) + CONTACT + FACT, SITE)
+    lead["data"]["pages"][0].update(text=parsed.text, elements=parsed.elements, sections=parsed.sections,
+                                    headings=parsed.headings, quotations=parsed.quotations)
+    out = engine.step(lead)
+    assert isinstance(out, Drop) and out.reason == "unproven_evidence"
+
+
+@pytest.mark.parametrize("fact", ["<p><q>Our firm</q> was founded in 2012.</p>",
+                                 "<p>Our firm was founded in <q>2012</q>.</p>"])
+def test_inline_quoted_fragments_cannot_supply_an_opener_fact(tmp_path, fact):
+    _, lead = pipeline(tmp_path, fact=fact)
+    assert (lead["stage"], lead["reason"]) == ("dropped", "no_opener_facts")
+
+
+def test_lowercase_opener_sentences_qualify_together_and_replay(tmp_path):
+    fact = "<p>our firm was founded in 2012. we specialize in payroll.</p>"
+    _, lead = pipeline(tmp_path, fact=fact)
+    assert lead["stage"] == "ready"
+    assert {f["kind"] for f in lead["data"]["facts"]} >= {"founded", "specialty"}
+
+
+def test_lowercase_role_sentence_after_independent_text_qualifies(tmp_path):
+    _, lead = pipeline(tmp_path, identity="<p>Our team. owner: Pat Example.</p>")
+    assert lead["stage"] == "ready"
+
+
 @pytest.mark.parametrize("tag", ["div", "section", "body"])
 def test_parent_direct_text_supplies_complete_identity_and_fact_sentences(tmp_path, tag):
     identity = "<%s>Pat <strong>Example</strong>, Owner.<p>Contact details follow.</p></%s>" % (tag, tag)
@@ -80,7 +116,7 @@ def test_gate_rejects_saved_inline_conflicts_and_direct_parent_assertions(tmp_pa
     engine, lead = pipeline(tmp_path, stop=True)
     parsed = parse_html(IDENTITY + CONTACT + FACT + extra, SITE)
     lead["data"]["pages"][0].update(text=parsed.text, elements=parsed.elements, emails=parsed.emails,
-                                    sections=parsed.sections, quotations=parsed.quotations)
+                                    sections=parsed.sections, quotations=parsed.quotations, headings=parsed.headings)
     out = engine.step(lead)
     assert isinstance(out, Drop) and out.reason == "unproven_evidence"
 

@@ -30,13 +30,17 @@ def complete(data: dict[str, Any]) -> bool:
                 or any(not isinstance(page.get(key), str) for key in ("url", "final_url", "text"))
                 or not page["url"] or not page["final_url"]
                 or any(not isinstance(page.get(key), list) for key in
-                       ("elements", "emails", "sections", "quotations", "jsonld"))):
+                       ("elements", "emails", "sections", "quotations", "jsonld", "headings"))):
             return False
-        if (any(not isinstance(value, str) for key in ("elements", "quotations") for value in page[key])
+        if (any(not isinstance(value, str) for key in ("elements", "quotations", "headings") for value in page[key])
                 or any(not isinstance(value, dict) for value in page["jsonld"])
-                or any(not isinstance(value, (list, tuple)) or len(value) != size
+                or any(not isinstance(value, (list, tuple)) or len(value) != 3
                        or any(not isinstance(part, str) for part in value)
-                       for key, size in (("emails", 3), ("sections", 2)) for value in page[key])):
+                       for value in page["emails"])
+                or any(not isinstance(value, (list, tuple)) or len(value) != 2
+                       or not isinstance(value[0], str) or not isinstance(value[1], list)
+                       or any(not isinstance(heading, str) for heading in value[1])
+                       for value in page["sections"])):
             return False
     return set(read) == {p["final_url"] for p in pages}
 
@@ -55,8 +59,9 @@ class Page:
     truncated: bool = False
     error: str = ""
     elements: list[str] = field(default_factory=list)
-    sections: list[tuple[str, str]] = field(default_factory=list)
+    sections: list[tuple[str, list[str]]] = field(default_factory=list)
     quotations: list[str] = field(default_factory=list)
+    headings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -151,7 +156,8 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "", mar
             return False
         return any(candidate["value"] == value and candidate["method"] == method
                    and normalize(candidate["quote"]) == normalize(quote)
-                   for person in find_people(pages, roles if roles is not None else DEFAULT_ROLES + [role], company)
+                   for person in find_people(pages, roles if roles is not None else DEFAULT_ROLES + [role], company,
+                                             market=market)
                    for candidate in person.facts
                    if candidate["source_url"] == page.final_url)
     if kind == "email" and method in ("text", "mailto"):
@@ -159,7 +165,7 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "", mar
         if not EMAIL_RE.fullmatch(address):
             return False
         filtered = [replace(p, emails=[e for e in p.emails if e[0] == address]) for p in pages]
-        for person in find_people(pages, roles if roles is not None else DEFAULT_ROLES, company):
+        for person in find_people(pages, roles if roles is not None else DEFAULT_ROLES, company, market=market):
             candidate, _ = find_email(filtered, person, host_of(page.final_url))
             if candidate and all(candidate[key] == fact.get(key) for key in ("value", "quote", "method", "source_url")):
                 return True
@@ -173,7 +179,7 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "", mar
 
 _ABBREVIATIONS = ("Co", "Inc", "Ltd", "Mr", "Mrs", "Ms", "Dr", "St", "Jr", "Sr", "No")
 _SENTENCE_END = re.compile(r"(?<=[.!?])" + "".join(r"(?<!\b%s\.)" % a for a in _ABBREVIATIONS)
-                           + r"(?<!\b[A-Z]\.)\s+(?=[A-Z\"'(])")
+                           + r"(?<!\b[A-Z]\.)\s+", re.I)
 
 
 def sentences(text: str) -> list[str]:

@@ -5,7 +5,7 @@ import datetime as dt
 
 import pytest
 
-from lead_engine.evidence import Page, supported
+from lead_engine.evidence import Page, sentences, supported
 from lead_engine.verify import find_people, opener_facts
 
 
@@ -67,3 +67,13 @@ def test_an_excerpt_cannot_remove_a_third_party_subject_from_the_snapshot():
     fact = {"kind": "founded", "value": {"year": "2012"}, "source_url": page.url,
             "method": "text", "quote": "founded in 2012."}
     assert not supported(fact, [page], market="Cedar Hollow, OR")
+
+
+@pytest.mark.parametrize("first,second", [
+    ("our firm was founded in 2012.", "we specialize in payroll."),
+    ("Harbor Ledger Co. was founded in 2012.", "our firm specializes in payroll."),
+    ("Harbor Ledger co. was founded in 2012.", "we specialize in payroll."),
+    ("Pat A. Example, Owner.", "owner: Lee Sample."),
+])
+def test_sentence_boundaries_ignore_case_and_preserve_abbreviations(first, second):
+    assert sentences(first + " " + second) == [first, second]

@@ -60,18 +60,27 @@ def surface(text: str) -> str:
     return " ".join(text.replace("\u2013", "-").replace("\u2014", "-").split())
 
 
+def _assertion_scopes(page: Page) -> list[tuple[str, bool]]:
+    scopes = [(text, False) for text in page.elements] + [(text, True) for text in page.headings]
+    return scopes or [(page.text, False)]
+
+
 def assertions(page: Page) -> list[str]:
-    scopes = page.elements if page.elements else [page.text]
-    return list(dict.fromkeys(sentence for scope in scopes for sentence in sentences(surface(scope))))
+    return list(dict.fromkeys(sentence for scope, _ in _assertion_scopes(page)
+                              for sentence in sentences(surface(scope))))
+
+
+def _heading_allowed(heading: str, company: str, names: set[str] | None = None) -> bool:
+    allowed = HEADINGS | {normalize(company)} | {normalize(n) for n in names or set()}
+    return normalize(heading) in allowed
 
 
 def _scope_allowed(page: Page, scope: str, company: str, names: set[str] | None = None) -> bool:
     text = normalize(scope)
-    if any(text in normalize(quote) for quote in page.quotations):
+    if any(text in normalize(quote) or normalize(quote) in text for quote in page.quotations if normalize(quote)):
         return False
-    allowed = HEADINGS | {normalize(company)} | {normalize(n) for n in names or set()}
-    return all(all(normalize(part) in allowed for part in heading.split(" / "))
-               for content, heading in page.sections if text in normalize(content))
+    return all(isinstance(headings, list) and all(_heading_allowed(heading, company, names) for heading in headings)
+               for content, headings in page.sections if text in normalize(content))
 
 
 def _identity(text: str, roles: list[str], company: str) -> tuple[str, str] | None:
@@ -119,7 +128,8 @@ def _variants(person: Person) -> set[str]:
     return {f["value"]["full_name"] for f in person.facts}
 
 
-def find_people(pages: list[Page], roles: list[str], company: str) -> list[Person]:
+def find_people(pages: list[Page], roles: list[str], company: str, *, market: str = "", today: dt.date | None = None
+                ) -> list[Person]:
     found = []
     for page in pages:
         for prop, node in schema_people(page.jsonld, company):
@@ -145,18 +155,25 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
         if fact not in person.facts:
             person.facts.append(fact)
     eligible = []
+    opener_forms = _opener_forms(company, market)
     for person in people.values():
         names = _variants(person)
         proven = True
         for page in pages:
-            for sentence in assertions(page):
-                if not any(re.search(r"\b%s\b" % re.escape(name), sentence, re.I) for name in names):
+            for scope, is_heading in _assertion_scopes(page):
+                if (is_heading and _heading_allowed(scope, company, names)
+                        and _scope_allowed(page, scope, company, names)):
                     continue
-                identity = _identity(sentence, roles, company)
-                contacts = [(a, c, m) for a, c, m in page.emails if normalize(sentence) == normalize(c)]
-                if not (identity and identity[0] in names) and not any(
-                        _contact(a, c, m, names) for a, c, m in contacts):
-                    proven = False
+                for sentence in sentences(surface(scope)):
+                    if not any(re.search(r"\b%s\b" % re.escape(name), sentence, re.I) for name in names):
+                        continue
+                    identity = _identity(sentence, roles, company)
+                    contacts = [(a, c, m) for a, c, m in page.emails if normalize(sentence) == normalize(c)]
+                    business = (_scope_allowed(page, sentence, company)
+                                and _opener_match(sentence, opener_forms, today) is not None)
+                    if not (identity and identity[0] in names) and not business and not any(
+                            _contact(a, c, m, names) for a, c, m in contacts):
+                        proven = False
         if proven:
             person.facts.sort(key=lambda fact: fact["method"] != "text")
             eligible.append(person)
@@ -200,8 +217,7 @@ def find_email(pages: list[Page], person: Person, host: str, allow_free_mail: bo
     return (candidates[0][1] if candidates else None), rejected
 
 
-def opener_facts(pages: list[Page], today: dt.date | None = None, *, company: str = "", market: str = ""
-                 ) -> list[dict[str, Any]]:
+def _opener_forms(company: str, market: str) -> list[tuple[str, str]]:
     subjects = ["We", "Our firm", "Our shop", "Our company", "Our team"] + ([surface(company)] if company else [])
     subject = "(?:" + "|".join(re.escape(s) for s in subjects) + ")"
     year = r"(?P<year>(?:19|20)\d{2})"
@@ -215,19 +231,32 @@ def opener_facts(pages: list[Page], today: dt.date | None = None, *, company: st
     place = surface(market.split(",")[0])
     if place:
         forms.append(("serving", rf"{subject} has served (?P<place>{re.escape(place)}) since {year}\."))
+    return forms
+
+
+def _opener_match(sentence: str, forms: list[tuple[str, str]], today: dt.date | None
+                  ) -> tuple[str, dict[str, str]] | None:
+    for kind, form in forms:
+        match = re.fullmatch(form, sentence, re.I)
+        if match:
+            value = match.groupdict()
+            if "year" not in value or 1900 <= int(value["year"]) <= (today or dt.date.today()).year:
+                return kind, value
+    return None
+
+
+def opener_facts(pages: list[Page], today: dt.date | None = None, *, company: str = "", market: str = ""
+                 ) -> list[dict[str, Any]]:
+    forms = _opener_forms(company, market)
     out = []
     seen = set()
     for page in pages:
         for sentence in assertions(page):
             if not _scope_allowed(page, sentence, company):
                 continue
-            for kind, form in forms:
-                match = re.fullmatch(form, sentence, re.I)
-                if not match:
-                    continue
-                value = match.groupdict()
-                if "year" in value and not 1900 <= int(value["year"]) <= (today or dt.date.today()).year:
-                    continue
+            match = _opener_match(sentence, forms, today)
+            if match:
+                kind, value = match
                 key = kind, tuple(value.items())
                 if key not in seen:
                     seen.add(key)
@@ -305,7 +334,8 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
         if drop.reason == "fit_not_shown":
             return unproven(drop.reason, drop.detail)
         return drop
-    people = find_people(pages, list(settings["roles"]), lead.get("company", ""))
+    people = find_people(pages, list(settings["roles"]), lead.get("company", ""),
+                         market=lead.get("market", ""), today=today)
     if not people:
         return unproven("decision_maker_not_found",
                         "no eligible exact %s template on %d page(s)" % ("/".join(settings["roles"][:3]), len(pages)))

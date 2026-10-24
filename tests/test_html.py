@@ -72,10 +72,11 @@ def test_direct_parent_text_keeps_boundaries_headings_and_quotations():
     parsed = parse_html("<body>Intro.<section><h2>Our team</h2>Pat <b>Example</b>, Owner."
                         "<p>Lee Sample, CEO.</p>Pat Example retired.</section>"
                         "<blockquote>Pat Example, Owner.<p>Quoted biography.</p></blockquote></body>", BASE)
-    assert parsed.elements == ["Intro.", "Our team", "Pat Example, Owner.", "Lee Sample, CEO.",
+    assert parsed.elements == ["Intro.", "Pat Example, Owner.", "Lee Sample, CEO.",
                                "Pat Example retired.", "Quoted biography."]
-    assert ("Pat Example, Owner.", "Our team") in parsed.sections
-    assert ("Pat Example retired.", "Our team") in parsed.sections
+    assert parsed.headings == ["Our team"]
+    assert ("Pat Example, Owner.", ["Our team"]) in parsed.sections
+    assert ("Pat Example retired.", ["Our team"]) in parsed.sections
     assert parsed.quotations == ["Pat Example, Owner. Quoted biography."]
 
 
@@ -91,3 +92,10 @@ def test_repeated_addresses_in_one_element_keep_the_complete_text():
                         "Email Pat Example: pat@<b>example.com</b></p>", BASE)
     context = "Email Pat Example: pat@example.com Email Pat Example: pat@example.com"
     assert parsed.emails == [("pat@example.com", context, "text")] * 2
+
+
+@pytest.mark.parametrize("tag", ["q", "cite"])
+def test_inline_citations_preserve_the_complete_enclosing_claim(tag):
+    parsed = parse_html("<p>Pat Example, Owner <%s>until 2020</%s>.</p>" % (tag, tag), BASE)
+    assert parsed.elements == ["Pat Example, Owner until 2020."]
+    assert parsed.quotations == (["until 2020"] if tag == "q" else [])

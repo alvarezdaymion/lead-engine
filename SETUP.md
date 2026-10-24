@@ -25,6 +25,8 @@ Verification and the gate use the same configured role list and the exact allowl
 
 Inline formatting preserves complete addresses and sentences, and direct parent text is checked alongside leaf blocks. Schema names use collapsed whitespace while retaining their original quotes. A business named after its owner follows the same identity templates. Host comparisons ignore capitalization, a leading `www.` and ports consistently during research and replay.
 
+Proven full-name headings and supported company facts do not disqualify an otherwise proven person. Each heading is checked as one complete string, including literal slashes, and its provenance and ancestry are retained for replay. Snapshots missing that provenance or storing ancestry as joined text require fresh qualification. Inline quotations cannot detach qualifiers from a claim, and lowercase sentences follow the same templates. CSV role evidence must prove the exported role for that person; a missing matching fact stops export.
+
 Done when `uv run --env-file .env lead-engine check` prints "Config OK" and the number of searches you agreed.
 
 ## 3. Voice and suppressions

@@ -101,7 +101,7 @@ def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, dupl
     policy = roles if roles is not None else [person_data["role"]]
     if not policy:
         raise StepError("decision-maker role policy is empty")
-    people = find_people(pages, policy, lead["company"])
+    people = find_people(pages, policy, lead["company"], market=lead.get("market", ""), today=now.date())
     person = next((p for p in people if name_key(p.first_name, p.last_name) == key
                    and p.role == person_data["role"]), None)
     email_fact = facts[data["email"]["fact_id"]]

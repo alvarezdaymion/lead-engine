@@ -14,8 +14,9 @@ SKIP_TAGS = {"script", "style", "noscript", "svg", "template", "iframe", "head"}
 BLOCK_TAGS = {
     "p", "div", "section", "article", "header", "footer", "nav", "li", "ul", "ol", "h1", "h2", "h3", "h4",
     "h5", "h6", "br", "tr", "td", "th", "table", "main", "aside", "blockquote", "figcaption", "form",
-    "label", "button", "dd", "dt", "address", "q", "cite",
+    "label", "button", "dd", "dt", "address",
 }
+HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
 EMAIL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 FILE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js")  # retina names ("@2x.png")
 
@@ -28,8 +29,9 @@ class Parsed:
     emails: list[tuple[str, str, str]] = field(default_factory=list)  # (address, context, method)
     jsonld: list[dict] = field(default_factory=list)
     elements: list[str] = field(default_factory=list)
-    sections: list[tuple[str, str]] = field(default_factory=list)
+    sections: list[tuple[str, list[str]]] = field(default_factory=list)
     quotations: list[str] = field(default_factory=list)
+    headings: list[str] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -54,10 +56,12 @@ class _Parser(HTMLParser):
         self.links: list[tuple[str, str]] = []
         self.mailto: list[tuple[str, str, int | None]] = []
         self.blocks: list[tuple[str, int, int | None]] = []
-        self.text_blocks: list[tuple[int | None, str, list[str]]] = []
+        self.text_blocks: list[tuple[int | None, list[str], list[str]]] = []
         self._text_block: list[str] | None = None
         self._blocks: list[int] = []
         self.headings: dict[int, tuple[str, int | None]] = {}
+        self.quote_ranges: list[tuple[int, int | None]] = []
+        self._quotes: list[int] = []
         self.ld_blocks: list[str] = []
         self._skip = 0
         self._ld: list[str] | None = None
@@ -71,7 +75,7 @@ class _Parser(HTMLParser):
         if self._text_block is None:
             self._text_block = []
             self.text_blocks.append((self._blocks[-1] if self._blocks else None,
-                                     " / ".join(text for text, _ in self.headings.values()), self._text_block))
+                                     [text for text, _ in self.headings.values()], self._text_block))
         self._text_block.append(text)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -87,6 +91,9 @@ class _Parser(HTMLParser):
         if tag in SKIP_TAGS:
             self._skip += 1
             return
+        if tag == "q":
+            self._quotes.append(len(self.quote_ranges))
+            self.quote_ranges.append((len(self.parts), None))
         if tag in BLOCK_TAGS:
             if tag == "br":
                 self._append_text("\n")
@@ -120,6 +127,10 @@ class _Parser(HTMLParser):
         if tag in SKIP_TAGS:
             self._skip = max(0, self._skip - 1)
             return
+        if tag == "q" and self._quotes:
+            index = self._quotes.pop()
+            start, _ = self.quote_ranges[index]
+            self.quote_ranges[index] = (start, len(self.parts))
         if tag == "a":
             text = " ".join("".join(self._anchor).split())[:120]
             if self._mail:
@@ -135,7 +146,7 @@ class _Parser(HTMLParser):
             self._text_block = None
             for i in range(len(self._blocks) - 1, -1, -1):
                 if self.blocks[self._blocks[i]][0] == tag:
-                    if re.fullmatch(r"h[1-6]", tag):
+                    if tag in HEADING_TAGS:
                         level = int(tag[1])
                         start = self.blocks[self._blocks[i]][1]
                         heading = " ".join("".join(self.parts[start:]).split())
@@ -216,7 +227,11 @@ def parse_html(body: str, base_url: str) -> Parsed:
             except ValueError:
                 continue
     title = " ".join("".join(p.title_parts).split())
+    quotations = [elements[i] for i, (tag, _, _) in enumerate(p.blocks) if tag == "blockquote"]
+    quotations.extend(" ".join("".join(p.parts[start:end]).split()) for start, end in p.quote_ranges)
     return Parsed(title=title, lines=lines, links=p.links, emails=emails, jsonld=jsonld,
-                  elements=list(dict.fromkeys(text for _, _, text in scopes)),
+                  elements=list(dict.fromkeys(text for block, _, text in scopes
+                                              if block is None or p.blocks[block][0] not in HEADING_TAGS)),
                   sections=[(text, heading) for _, heading, text in scopes if heading],
-                  quotations=[elements[i] for i, (tag, _, _) in enumerate(p.blocks) if tag in {"blockquote", "q"}])
+                  quotations=quotations,
+                  headings=[elements[i] for i, (tag, _, _) in enumerate(p.blocks) if tag in HEADING_TAGS])
