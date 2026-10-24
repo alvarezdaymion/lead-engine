@@ -41,16 +41,31 @@ founded = [
   "Running {company} since {year} is a long stretch for any small business.",
   "{company} has been at it since {year}, and that kind of staying power is rare.",
   "Keeping a small business going since {year} takes real work.",
+  "Your firm dates back to {year}.",
+  "Since {year}, {company} has been in business.",
+  "The business started in {year}.",
 ]
 years = [
   "{years} years at this is a long run for any small business.",
   "Staying at it for {years} years takes more than luck.",
+  "You have {years} years of experience at this.",
+  "That is {years} years of experience at {company}.",
+  "With {years} years of experience, you have been at this a while.",
+  "After {years} years at this, you have a long track record.",
 ]
 specialty = [
   "Focusing on {specialty} is a smart way to stand out.",
   "Building the business around {specialty} is a sharp call.",
+  "Your focus is {specialty}.",
+  "The firm specializes in {specialty}.",
+  "You specialize in {specialty}.",
+  "{specialty_cap} is the focus at {company}.",
 ]
 award = [
   "Getting {verb} {award} is the kind of thing customers notice.",
   "Being {verb} {award} is a nice thing to point to.",
+  "Your firm was {verb} {award}.",
+  "The business was {verb} {award}.",
+  "You were {verb} {award}.",
+  "That {award} title came from being {verb}.",
 ]

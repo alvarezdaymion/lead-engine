@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 import tomllib
 from dataclasses import dataclass, field, fields
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,11 @@ NUMBER_WORDS = {
     "ninety": "90", "hundred": "100", "dozen": "12",
 }
 ALWAYS_OK = {"i", "i'm", "i've", "i'd", "i'll", "ok"}
+NUMBER = re.compile(r"(?<!\w)[+-]?\d+(?:,\d{3})*(?:\.\d+)?(?!\w)")
+
+
+def _numbers(text: str) -> set[Decimal]:
+    return {Decimal(n.replace(",", "")) for n in NUMBER.findall(text)}
 
 
 @dataclass
@@ -135,12 +141,12 @@ def _evidence_problems(text: str, cited: list[dict[str, Any]], company: str, mar
     quote_words = set(re.findall(r"[a-z0-9']+", quotes))
     context = set(re.findall(r"[a-z0-9']+", normalize(company + " " + market)))
     problems = []
-    for num in re.findall(r"\d[\d,]*", text):
-        digits = num.replace(",", "")
-        if digits not in quote_words and num not in quotes:
+    numbers = _numbers(quotes + " " + company + " " + market)
+    for num in NUMBER.findall(text):
+        if Decimal(num.replace(",", "")) not in numbers:
             problems.append("the number %s is not in the cited evidence" % num)
     for word in re.findall(r"[a-z]+", text.lower()):
-        if word in NUMBER_WORDS and word not in quote_words and NUMBER_WORDS[word] not in quote_words:
+        if word in NUMBER_WORDS and word not in quote_words and Decimal(NUMBER_WORDS[word]) not in numbers:
             problems.append('"%s" is not in the cited evidence' % word)
     for sentence in sentences(text):
         for word in re.findall(r"[A-Za-z][A-Za-z'\u2019-]*", sentence)[1:]:

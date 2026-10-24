@@ -1,9 +1,14 @@
 """The polite fetcher: robots.txt, timeouts, size cap, per-host rate limit."""
 
+import io
+import urllib.request
+import urllib.response
+from email.message import Message
+
 import pytest
 from helpers import Clock, html_transport
 
-from lead_engine.fetch import Disallowed, Fetcher, FetchError
+from lead_engine.fetch import Disallowed, Fetcher, FetchError, Response
 
 SITE = "https://shop.example.com"
 PAGE = "<html><head><title>Shop</title></head><body><p>Hello there.</p></body></html>"
@@ -95,3 +100,64 @@ def test_charset_from_content_type_is_used():
     t = html_transport({SITE + "/": "<p>caf\u00e9</p>"}, headers={SITE + "/": "text/html; charset=utf-8"})
     f, _ = fetcher(t)
     assert "caf\u00e9" in f.get(SITE + "/").text
+
+
+def test_native_transport_rejects_an_external_redirect_before_fetching_it(monkeypatch):
+    calls = []
+
+    class LocalPages(urllib.request.BaseHandler):
+        handler_order = 100
+
+        def https_open(self, request):
+            calls.append(request.full_url)
+            headers = Message()
+            headers["Location"] = "https://outside.example.org/about"
+            status = 404 if request.full_url.endswith("robots.txt") else 302
+            result = urllib.response.addinfourl(io.BytesIO(b""), headers, request.full_url, status)
+            result.msg = "Synthetic response"
+            return result
+
+    build = urllib.request.build_opener
+    monkeypatch.setattr(urllib.request, "build_opener", lambda *handlers: build(LocalPages(), *handlers))
+    f = Fetcher("lead-engine-test", per_host_seconds=0)
+    with pytest.raises(Disallowed):
+        f.get(SITE + "/")
+    assert calls == [SITE + "/robots.txt", SITE + "/"]
+
+
+def test_redirect_destinations_obey_robots_and_request_spacing():
+    transport = html_transport({SITE + "/robots.txt": "User-agent: *\nDisallow: /private\n",
+                                SITE + "/about": PAGE})
+
+    def redirect(url, *args):
+        if url == SITE + "/":
+            return Response(302, {"location": "/about"}, b"", url)
+        if url == SITE + "/team":
+            return Response(302, {"location": "/private"}, b"", url)
+        return transport(url, *args)
+
+    f, clock = fetcher(redirect)
+    assert f.get(SITE + "/").final_url == SITE + "/about"
+    with pytest.raises(Disallowed):
+        f.get(SITE + "/team")
+    assert SITE + "/private" not in [u for u, _ in transport.calls]
+    assert clock.ticks == 6.0
+
+
+@pytest.mark.parametrize("status", [200, 503, 0])
+def test_fetch_diagnostics_and_snapshots_remove_url_secrets(status):
+    url = "https://shop.example.com/about?token=private#private"
+
+    def transport(target, *args):
+        if target.endswith("robots.txt"):
+            return Response(404, {}, b"", target)
+        if status == 0:
+            raise OSError("connection failed for " + target)
+        return Response(status, {"content-type": "text/html"}, PAGE.encode(), target)
+
+    f, _ = fetcher(transport)
+    try:
+        result = str(f.get(url).to_dict())
+    except (FetchError, Disallowed) as error:
+        result = str(error)
+    assert "private" not in result and "token=" not in result and "user:" not in result

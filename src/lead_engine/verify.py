@@ -19,8 +19,10 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
-from .evidence import Page, schema_people, schema_quote, sentences
-from .fetch import Disallowed, Fetcher, FetchError, host_of
+from .evidence import Page, schema_people, schema_quote, sentences, supported
+from .fetch import Disallowed, Fetcher, FetchError, OffsiteRedirect, host_of
+from .html import EMAIL_RE
+from .http import safe_url
 from .names import canonical_first, split_name, tokens
 from .outcome import Advance, Drop, StepError
 
@@ -49,6 +51,7 @@ NOT_NAME_WORDS = {
     "follow", "get", "started", "request", "quote", "estimate", "schedule", "why", "choose", "what", "how",
     "who", "we", "services", "service", "pricing", "reviews", "testimonials", "gallery", "faq", "company",
     "group", "studio", "solutions", "partners", "associates", "consulting", "office", "street", "avenue",
+    "email", "write", "send", "reach",
     "road", "suite", "inc", "llc", "ltd", "co", "and", "of", "for", "with", "a", "an", "my", "your",
 }
 
@@ -58,6 +61,8 @@ NOT_POSSESSIVE = r"(?!['\u2019]s\b)"  # "the founder's daughter" names someone e
 VERB_ROLE = {"founded": "Founder", "co-founded": "Co-founder", "started": "Founder", "established": "Founder",
              "opened": "Founder", "launched": "Founder", "owns": "Owner", "owned": "Owner",
              "owned and operated": "Owner", "run": "Owner"}
+NON_CURRENT = re.compile(r"\b(?:former|previous|retired|retiring|late|deceased|ex-owner|ex-president|"
+                         r"stepped down|no longer|passed away|assistant|deputy|vice)\b", re.I)
 
 
 @dataclass
@@ -153,9 +158,14 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
             title = str(node.get("jobTitle") or "")
             role, role_from = (title, "jobTitle") if title else ({"founder": "Founder", "owner": "Owner"}.get(prop, ""),
                                                                  "property")
-            if name and role and role_only.search(role):
+            if name and role and role_only.search(role) and not NON_CURRENT.search(role):
                 found.append(_person_fact(name, role, page, schema_quote(prop, node), "schema.org", role_from))
-        for sentence in sentences(page.text):
+        lines = page.lines
+        current_text = "\n".join(line for i, line in enumerate(lines)
+                                 if not NON_CURRENT.search(" ".join(lines[max(0, i - 1):i + 2])))
+        for sentence in sentences(current_text):
+            if NON_CURRENT.search(sentence):
+                continue
             for rx in patterns:
                 for m in rx.finditer(sentence):
                     name = _clean_name(m.group("name"), company_tokens)
@@ -163,12 +173,13 @@ def find_people(pages: list[Page], roles: list[str], company: str) -> list[Perso
                         continue
                     groups = m.groupdict()
                     role = groups.get("role") or VERB_ROLE.get(" ".join((groups.get("verb") or "").lower().split()), "")
-                    if role:
+                    if role and role_only.fullmatch(role):
                         quote = _crop(sentence, m.start(), m.end())
                         found.append(_person_fact(name, role, page, quote, "text", "text"))
-        lines = page.lines
         for i, line in enumerate(lines):
             if len(line.split()) > 8 or not role_only.search(line):
+                continue
+            if NON_CURRENT.search(" ".join(lines[max(0, i - 1):i + 2])):
                 continue
             role = role_only.search(line).group(0)
             pair = None
@@ -220,11 +231,23 @@ def on_site_domain(domain: str, host: str) -> bool:
     return domain == host or host.endswith("." + domain) or domain.endswith("." + host)
 
 
+def _beside_person(context: str, person: Person, others: list[Person]) -> bool:
+    text = EMAIL_RE.sub("", context)
+    if not re.search(r"\b%s\b" % re.escape(person.first_name), text, re.I):
+        return False
+    if any(re.search(r"\b%s\b" % re.escape(other.first_name), text, re.I) for other in others):
+        return False
+    for match in re.finditer(_NAME, text):
+        name = _clean_name(match.group(0), set())
+        if name and tokens(name) != tokens(person.full_name):
+            return False
+    return True
+
+
 def find_email(pages: list[Page], person: Person, host: str, allow_free_mail: bool = True,
                others: list[Person] | None = None) -> tuple[dict[str, Any] | None, list[str]]:
     wanted = local_parts(person.first_name, person.last_name)
     theirs = {part: o.full_name for o in others or [] for part in local_parts(o.first_name, o.last_name)}
-    first_rx = re.compile(r"\b%s\b" % re.escape(person.first_name), re.I)
     best: tuple[tuple[int, int], dict[str, Any]] | None = None
     rejected: list[str] = []
     for page in pages:
@@ -232,12 +255,12 @@ def find_email(pages: list[Page], person: Person, host: str, allow_free_mail: bo
             local, _, domain = address.partition("@")
             base = local.split("+", 1)[0]
             matches_name = base in wanted
-            beside = bool(first_rx.search(context))
+            beside = _beside_person(context, person, others or [])
             on_site = on_site_domain(domain, host)
             free = domain in FREE_MAIL
             if base in SHARED_INBOXES:
                 rejected.append("%s is a shared inbox" % address)
-            elif base in theirs and not matches_name:
+            elif base in theirs:
                 rejected.append("%s belongs to %s" % (address, theirs[base]))
             elif not on_site and not (free and allow_free_mail):
                 rejected.append("%s is not on the business's domain" % address)
@@ -345,14 +368,16 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
     host = host_of(site)
     try:
         home = fetcher.get(site)
+    except OffsiteRedirect as e:
+        return Drop("redirected_off_site", str(e))
     except Disallowed:
-        return Drop("robots_disallowed", "robots.txt does not allow %s" % site)
+        return Drop("robots_disallowed", "robots.txt does not allow %s" % safe_url(site))
     except FetchError as e:
         raise StepError(str(e)) from None
     if not home.ok:
-        return Drop("site_unavailable", "%s: %s" % (site, home.error))
+        return Drop("site_unavailable", "%s: %s" % (safe_url(site), home.error))
     if host_of(home.final_url) != host:
-        return Drop("redirected_off_site", "%s redirects to %s" % (site, home.final_url))
+        return Drop("redirected_off_site", "%s redirects to %s" % (safe_url(site), safe_url(home.final_url)))
     pages, failed = [home], []
     for url in candidate_urls(home, host, int(settings["max_pages"]) - 1):
         try:
@@ -373,6 +398,8 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
 
     drop = _fit_drop(pages, list(settings.get("require_any") or []), list(settings.get("exclude_any") or []))
     if drop:
+        if drop.reason == "fit_not_shown":
+            return unproven(drop.reason, drop.detail)
         return drop
     people = find_people(pages, list(settings["roles"]), lead.get("company", ""))
     if not people:
@@ -383,7 +410,10 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
     if email is None:
         why = "; ".join(rejected[:3]) or "no address published"
         return unproven("no_direct_email", "%s (%s): %s" % (person.full_name, person.role, why))
-    facts = person.facts + [email] + opener_facts(pages, today)
+    openers = opener_facts(pages, today)
+    if failed and not openers:
+        raise StepError("could not read %s; deciding opener facts after a retry" % failed[0])
+    facts = person.facts + [email] + openers
     for i, f in enumerate(facts, 1):
         f["id"] = "f%d" % i
     cited = {f["source_url"] for f in facts}
@@ -396,4 +426,7 @@ def research(lead: dict[str, Any], fetcher: Fetcher, settings: dict[str, Any], t
         "pages_read": read,
         "pages": [p.to_dict() for p in pages if p.final_url in cited],
     }
+    snapshots = [Page.from_dict(p) for p in data["pages"]]
+    if not all(supported(f, snapshots) for f in facts):
+        raise StepError("extracted facts do not match the stored page snapshots")
     return Advance("verified", data)

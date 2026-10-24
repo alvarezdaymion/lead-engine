@@ -6,7 +6,7 @@ import urllib.parse
 import pytest
 from helpers import add_site, make_engine
 
-from lead_engine.gate import Suppressions
+from lead_engine.gate import Suppressions, load_suppressions
 from lead_engine.handoff import lead_payload, run_handoff
 from lead_engine.http import HttpError
 from lead_engine.instantly import InstantlyClient
@@ -31,6 +31,7 @@ class FakeApi:
 
 
 def ready_leads(tmp_path, clock, n=2):
+    (tmp_path / "suppressions.csv").write_text("email,domain\n")
     engine = make_engine(tmp_path, clock)
     for host, name in [("harbor-ledger.example.com", "Harbor Ledger Co."),
                        ("copperfield-inspections.example.org", "Copperfield Inspections")][:n]:
@@ -53,7 +54,8 @@ def test_dry_run_writes_exactly_what_live_mode_would_send_and_sends_nothing(tmp_
 
     api = FakeApi({("POST", "/api/v2/leads/add"): {"created_leads": [{"index": 0, "id": "lead-a1"}]}})
     run_handoff(engine.store, {**settings, "mode": "live"}, suppressions=Suppressions(), out_dir=tmp_path / "out",
-                client=InstantlyClient(KEY, transport=api), campaign_id="camp-1")
+                client=InstantlyClient(KEY, transport=api), campaign_id="camp-1",
+                suppression_file=tmp_path / "suppressions.csv")
     assert [body for _, _, body in api.calls] == [r["body"] for r in requests]
 
 
@@ -71,7 +73,8 @@ def test_live_hand_off_marks_created_leads_and_drops_skipped_ones(tmp_path, cloc
         "invalid_email_count": 0, "skipped_count": 0, "created_leads": [{"index": 0, "id": "lead-a1"}]}})
     client = InstantlyClient(KEY, transport=api)
     out = run_handoff(engine.store, {**SETTINGS, "mode": "live"}, suppressions=Suppressions(),
-                      out_dir=tmp_path / "out", client=client, campaign_id="camp-1")
+                      out_dir=tmp_path / "out", client=client, campaign_id="camp-1",
+                      suppression_file=tmp_path / "suppressions.csv")
     assert out["added"] == 1 and out["skipped"] == 1
     sent = api.calls[0][2]
     assert sent["campaign_id"] == "camp-1" and sent["skip_if_in_workspace"] is True and len(sent["leads"]) == 2
@@ -85,9 +88,14 @@ def test_a_platform_failure_leaves_leads_ready_and_their_repairs_untouched(tmp_p
     engine = ready_leads(tmp_path, clock)
     api = FakeApi({("POST", "/api/v2/leads/add"): lambda u, b: (500, {"message": "upstream down"})})
     out = run_handoff(engine.store, {**SETTINGS, "mode": "live"}, suppressions=Suppressions(),
-                      out_dir=tmp_path / "out", client=InstantlyClient(KEY, transport=api), campaign_id="camp-1")
+                      out_dir=tmp_path / "out", client=InstantlyClient(KEY, transport=api), campaign_id="camp-1",
+                      suppression_file=tmp_path / "suppressions.csv")
     assert out["added"] == 0 and "HTTP 500" in out["errors"][0]
     assert all(x["stage"] == "ready" and x["attempts"] == 0 for x in engine.store.by_stage(("ready",)))
+    run_handoff(engine.store, {**SETTINGS, "mode": "live"}, suppressions=Suppressions(),
+                out_dir=tmp_path / "out", client=InstantlyClient(KEY, transport=api), campaign_id="camp-1",
+                suppression_file=tmp_path / "suppressions.csv")
+    assert len(api.calls) == 1
 
 
 def test_suppressions_are_checked_again_right_before_sending(tmp_path, clock):
@@ -104,7 +112,8 @@ def test_off_mode_and_a_missing_campaign_send_nothing(tmp_path, clock):
                        out_dir=tmp_path) == {"mode": "off"}
     api = FakeApi({})
     out = run_handoff(engine.store, {**SETTINGS, "mode": "live"}, suppressions=Suppressions(), out_dir=tmp_path,
-                      client=InstantlyClient(KEY, transport=api), campaign_id="")
+                      client=InstantlyClient(KEY, transport=api), campaign_id="",
+                      suppression_file=tmp_path / "suppressions.csv")
     assert out["error"] == "set INSTANTLY_CAMPAIGN_ID" and api.calls == []
 
 
@@ -147,3 +156,109 @@ def test_add_leads_validates_its_input_and_a_missing_key_fails_clearly(monkeypat
     monkeypatch.delenv("INSTANTLY_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="INSTANTLY_API_KEY"):
         InstantlyClient()
+
+
+def test_live_batches_reload_suppressions_and_stop_if_file_disappears(tmp_path, clock):
+    engine = ready_leads(tmp_path, clock)
+    path = tmp_path / "suppressions.csv"
+    path.write_text("email,domain\n")
+    pending = engine.store.by_stage(("ready",))
+    calls = []
+
+    class Client:
+        def add_leads(self, campaign, batch):
+            calls.append(batch)
+            path.write_text("email,domain\n%s,\n" % pending[1]["email"])
+            return {"created_leads": [{"index": 0, "id": "lead-1"}]}
+
+    result = run_handoff(engine.store, {**SETTINGS, "mode": "live", "batch_size": 1},
+                         suppressions=load_suppressions(path), suppression_file=path, out_dir=tmp_path,
+                         client=Client(), campaign_id="camp-1")
+    assert len(calls) == 1 and result["added"] == 1
+    assert engine.store.get(pending[1]["id"])["reason"] == "suppressed"
+    path.unlink()
+    with pytest.raises(FileNotFoundError):
+        run_handoff(engine.store, {**SETTINGS, "mode": "live"}, suppressions=Suppressions(),
+                    suppression_file=path, out_dir=tmp_path, client=Client(), campaign_id="camp-1")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("response", [b"not JSON", b"", b"{}", b"[]",
+    b'{"created_leads": []}',
+    b'{"created_leads": [{"index": 2, "id": "lead-1"}]}',
+    b'{"created_leads": [{"index": 0, "id": ""}], "skipped_count": 1}',
+    b'{"created_leads": [{"index": 0, "id": "lead-1"}, {"index": 0, "id": "lead-2"}]}',
+    b'{"created_leads": [], "skipped_count": -2}',
+    b'{"created_leads": [], "skipped_count": true}',
+    b'{"created_leads": [], "skipped_count": 2, "total_sent": 3}',
+])
+def test_uncertain_handoff_is_never_dropped_or_repeated(tmp_path, clock, response):
+    engine = ready_leads(tmp_path, clock)
+    path = tmp_path / "suppressions.csv"
+    path.write_text("email,domain\n")
+    calls = []
+
+    def transport(*args):
+        calls.append(args)
+        return 200, response
+
+    options = dict(suppressions=Suppressions(), suppression_file=path, out_dir=tmp_path,
+                   client=InstantlyClient(KEY, transport=transport), campaign_id="camp-1")
+    result = run_handoff(engine.store, {**SETTINGS, "mode": "live"}, **options)
+    assert result["errors"] and engine.store.counts()["ready"] == 2
+    from lead_engine.store import Store
+    reopened = Store(engine.store.path, clock=clock)
+    run_handoff(reopened, {**SETTINGS, "mode": "live"}, **options)
+    assert len(calls) == 1
+    assert all(x["attempts"] == 0 for x in reopened.by_stage(("ready",)))
+    reopened.close()
+
+
+def test_live_handoff_requires_a_suppression_file(tmp_path, clock):
+    engine = ready_leads(tmp_path, clock, n=1)
+    api = FakeApi({})
+    with pytest.raises(ValueError, match="suppression"):
+        run_handoff(engine.store, {**SETTINGS, "mode": "live"}, suppressions=Suppressions(), out_dir=tmp_path,
+                    client=InstantlyClient(KEY, transport=api), campaign_id="camp-1")
+    assert api.calls == []
+
+
+def test_crash_after_an_external_write_does_not_repeat_it(tmp_path, clock):
+    engine = ready_leads(tmp_path, clock, n=1)
+    path = tmp_path / "suppressions.csv"
+    path.write_text("email,domain\n")
+    calls = []
+
+    class Client:
+        def add_leads(self, *args):
+            calls.append(args)
+            raise KeyboardInterrupt
+
+    options = dict(suppressions=Suppressions(), suppression_file=path, out_dir=tmp_path,
+                   client=Client(), campaign_id="camp-1")
+    with pytest.raises(KeyboardInterrupt):
+        run_handoff(engine.store, {**SETTINGS, "mode": "live"}, **options)
+    result = run_handoff(engine.store, {**SETTINGS, "mode": "live"}, **options)
+    assert len(calls) == 1 and engine.store.counts()["ready"] == 1
+    from lead_engine.report import status_lines
+    assert result["unresolved"] == 1
+    assert "Hand-off awaiting reconciliation: 1" in status_lines(engine.store)
+
+
+def test_unresolved_leads_do_not_fill_the_next_handoff_budget(tmp_path, clock):
+    engine = ready_leads(tmp_path, clock)
+    calls = []
+
+    class Client:
+        def add_leads(self, *args):
+            calls.append(args)
+            if len(calls) == 1:
+                raise HttpError("connection lost")
+            return {"created_leads": [{"index": 0, "id": "lead-2"}]}
+
+    settings = {**SETTINGS, "mode": "live", "max_leads_per_run": 1}
+    options = dict(suppressions=Suppressions(), suppression_file=tmp_path / "suppressions.csv",
+                   out_dir=tmp_path, client=Client(), campaign_id="camp-1")
+    run_handoff(engine.store, settings, **options)
+    run_handoff(engine.store, settings, **options)
+    assert len(calls) == 2 and engine.store.counts()["handed_off"] == 1

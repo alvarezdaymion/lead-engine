@@ -13,13 +13,16 @@ from __future__ import annotations
 
 import csv
 import datetime as dt
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
 from .evidence import Page, supported
 from .fetch import host_of
+from .html import EMAIL_RE
 from .outcome import Advance, Drop, StepError
+from .verify import DEFAULT_ROLES, find_email, find_people
 from .voice import Voice, check_opener
 
 
@@ -33,18 +36,32 @@ class Suppressions:
 
 
 def load_suppressions(path: Path | None) -> Suppressions:
-    """CSV with an `email` column, a `domain` column, or both. A missing file means an empty list."""
-    if path is None or not Path(path).exists():
-        return Suppressions()
+    """Read a complete CSV with an `email` column, a `domain` column, or both. Fail closed on invalid input."""
+    if path is None:
+        raise ValueError("a suppression file is required")
     emails, domains = set(), set()
     with Path(path).open(newline="", encoding="utf-8-sig") as f:
-        for row in csv.DictReader(f):
-            email = (row.get("email") or "").strip().lower()
-            domain = (row.get("domain") or "").strip().lower().removeprefix("@").removeprefix("www.")
-            if email:
-                emails.add(email)
-            if domain:
-                domains.add(domain)
+        try:
+            reader = csv.DictReader(f, strict=True)
+            fields = reader.fieldnames or []
+            if not fields or set(fields) - {"email", "domain"} or len(fields) != len(set(fields)):
+                raise ValueError("suppression CSV columns must be email, domain, or both, without duplicates")
+            for row in reader:
+                if None in row or any(value is None for value in row.values()):
+                    raise ValueError("suppression CSV has an incomplete row")
+                email = (row.get("email") or "").strip().lower()
+                domain = (row.get("domain") or "").strip().lower().removeprefix("@").removeprefix("www.")
+                if email:
+                    if not EMAIL_RE.fullmatch(email):
+                        raise ValueError("suppression CSV has an invalid email")
+                    emails.add(email)
+                if domain:
+                    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+",
+                                        domain):
+                        raise ValueError("suppression CSV has an invalid domain")
+                    domains.add(domain)
+        except csv.Error:
+            raise ValueError("suppression CSV is malformed") from None
     return Suppressions(frozenset(emails), frozenset(domains))
 
 
@@ -68,6 +85,24 @@ def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, dupl
     for fid in needed:
         if fid not in facts or not supported(facts[fid], pages):
             raise StepError("fact %s no longer matches its stored page" % fid)
+    person_data = data["person"]
+    person_facts = [facts[fid] for fid in person_data["fact_ids"]]
+    if (not person_facts or any(f["kind"] != "decision_maker" or any(
+            f["value"].get(k) != person_data[k] for k in ("full_name", "first_name", "last_name"))
+            for f in person_facts)
+            or not any(f["value"].get("role") == person_data["role"] for f in person_facts)):
+        raise StepError("person does not match the cited decision-maker facts")
+    people = find_people(pages, [*DEFAULT_ROLES, person_data["role"]], lead["company"])
+    person = next((p for p in people if (p.full_name, p.first_name, p.last_name, p.role) ==
+                   tuple(person_data[k] for k in ("full_name", "first_name", "last_name", "role"))), None)
+    email_fact = facts[data["email"]["fact_id"]]
+    if person is None or email_fact["kind"] != "email" or email_fact["value"].get("email") != email:
+        raise StepError("person and email do not match their evidence")
+    email_pages = [replace(p, emails=[item for item in p.emails if item[0] == email]) for p in pages]
+    proven_email, _ = find_email(email_pages, person, host_of(lead["website"]),
+                                 others=[p for p in people if p != person])
+    if proven_email is None:
+        raise StepError("email is not unambiguously tied to the decision-maker")
     problems = check_opener(data["opener"]["text"], voice=voice, cited=[facts[i] for i in data["opener"]["fact_ids"]],
                             company=lead["company"], market=lead.get("market", ""),
                             first_name=data["person"]["first_name"])

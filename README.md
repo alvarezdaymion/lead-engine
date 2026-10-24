@@ -20,7 +20,9 @@ cd lead-engine
 uv run lead-engine demo        # fictional businesses from local HTML; no keys, no network
 ```
 
-To use it on real businesses, run `uv run lead-engine init`, edit `lead-engine.toml` and `voice.toml`, put keys in `.env`, then `uv run lead-engine check` and `uv run lead-engine run`. Or hand the repo to your coding agent and say "set up lead-engine for my business": [SETUP.md](SETUP.md) is written for it.
+To use it on real businesses, run `uv run lead-engine init`, edit `lead-engine.toml` and `voice.toml`, copy `.env.example` to `.env` and fill in the keys, then run `uv run --env-file .env lead-engine check` and `uv run --env-file .env lead-engine run`. Use `--env-file .env` for manual commands that need credentials; the CLI does not load the file itself. Or hand the repo to your coding agent and say "set up lead-engine for my business": [SETUP.md](SETUP.md) is written for it.
+
+The demo requires an empty destination and marks it with `.lead-engine-demo`. To rerun it, use `uv run lead-engine demo --reset` (and the same `--dir` if you chose one). Reset is refused for unmarked directories.
 
 ## What you see
 
@@ -58,7 +60,7 @@ a failed step: same stage, attempt + 1, retry after backoff --> retired (reason)
 - **Lease, then resume.** A worker leases one lead for `lease_minutes`. A lease that runs out was abandoned: the next run counts it as a failed attempt and resumes the lead. A lead that keeps killing its worker is retired like any other repeated failure, so it can't stall the queue.
 - **Retry with backoff, then retire with a reason.** No lead stays half-researched. It moves forward, is dropped with the reason it can't be proven, or is retired with the error that kept it from moving.
 - **Unreadable is not unproven.** A page that timed out is not evidence that nothing is there. When a page verification wanted could not be read and nothing was proven without it, the step is retried instead of dropped.
-- **Outages don't burn budgets.** Model API failures release the lead and stop the run. A hand-off request that fails leaves its leads `ready` for the next run.
+- **Outages don't burn budgets.** Model API failures release the lead and stop the run or backlog pass. An uncertain hand-off leaves its leads `ready` for manual reconciliation; a durable write record blocks automatic resubmission.
 - **Re-check the stranded pile.** `lead-engine backlog` takes retired leads, research leads untouched for `stale_hours`, and half-researched leads imported from another tool (`--import stranded.csv`, template in [examples/stranded.csv](examples/stranded.csv)). Each is verified again from a fresh read: **recovered** (the same person is proven again; nicknames and suffixes count, so does a matching address), **changed** (a different decision-maker is proven; the old name is recorded and the lead continues), **dropped** (nothing can be proven any more) or **inconclusive** (the site can't be read right now; the lead is left exactly as it was). Recovered and changed leads get a fresh repair budget and continue to write and gate in the same pass.
 
 `tests/test_engine.py` and `tests/test_backlog.py` cover each rule: stage transitions, a step that fails twice then succeeds, a lead retired after max repairs, the backoff cap, resume after a crash mid-run without fetching again, a lead that keeps killing its worker, shared outages, and every backlog outcome.
@@ -66,9 +68,9 @@ a failed step: same stage, attempt + 1, retry after backoff --> retired (reason)
 ## Evidence rules
 
 - **Decision-maker.** A named person with an owner-level role from `[verify] roles` (owner, founder, president, principal and similar) in a sentence on the site, on a team card ("Dana Whitlock" above "Owner"), or in a schema.org founder or employee node. A first name alone, a heading, someone else's role ("the founder's daughter") or a former owner is not proof. The strongest role wins, and a sentence on the site beats a schema.org node alone.
-- **Address.** Published on the site, on the business's own domain, not a shared inbox (info@, hello@, office@ and similar), and tied to the person: the address matches their name (dana.whitlock@, dwhitlock@) or is printed beside it. A gmail-style address counts only when printed beside the person's name. The engine never guesses addresses or buys them from enrichment services.
+- **Address.** Published on the site, on the business's own domain, not a shared inbox (info@, hello@, office@ and similar), and tied to the person: the address matches their name (dana.whitlock@, dwhitlock@) or is printed unambiguously beside it. A paragraph naming another person is insufficient for a nearby-name binding. A gmail-style address counts only when the person's name is printed separately from the address. The gate checks the association again. The engine never guesses addresses or buys them from enrichment services.
 - **Opener facts.** Founding year, years in business, specialty and awards, each with the sentence it came from.
-- **Every kept fact** stores its source URL, its method (`text`, `schema.org` or `mailto`) and its quote, plus a snapshot of the page's text, so the gate proves it again without fetching anything. `lead-engine export` writes the facts to CSV.
+- **Every kept fact** stores its source URL, its method (`text`, `schema.org` or `mailto`) and its quote, plus the fetched page text, bounded by the fetch size cap. Verification checks the serialized snapshot before checkpointing, and the gate proves the fact's values and relationships again without fetching anything. Unknown kinds and methods fail. `lead-engine export` writes the facts to CSV.
 
 ## Voice rules
 
@@ -76,8 +78,8 @@ a failed step: same stage, attempt + 1, retry after backoff --> retired (reason)
 
 Two writers:
 
-- `template` (default, no keys) fills the `[templates]` in voice.toml with one fact's values. The order rotates per lead so consecutive leads open differently.
-- `claude` (optional): `uv sync --extra llm`, set `ANTHROPIC_API_KEY` and `[writer] mode = "claude"`. The model receives the facts (never the address), the voice rules and the recent openings, and returns strict JSON with the line and the ids of the facts it used. A draft that fails the rules gets one repair round with the problems listed; a second failure is a failed attempt in the repair cycle.
+- `template` (default, no keys) fills the `[templates]` in voice.toml with one fact's values. The order rotates per lead so consecutive leads open differently. Each default kind has six distinct openings for the five-opener exclusion window. Custom templates need more distinct openings than `distinct_window` for repeated facts.
+- `claude` (optional): `uv sync --extra llm`, set `ANTHROPIC_API_KEY` and `[writer] mode = "claude"`. The model receives the facts, the voice rules and the recent openings, and returns strict JSON with the line and the ids of the facts it used. Addresses are redacted from every prompt field; original evidence stays local. A draft that fails the rules gets one repair round with the problems listed; a second failure is a failed attempt in the repair cycle.
 
 ## Connectors
 
@@ -101,16 +103,20 @@ A high warmup score does not prove that emails reach the inbox. Two commands che
 - `lead-engine warmup` reads every sending inbox's settings and flags values outside the ranges in `[warmup]`: account and warmup status, daily limit, sending gap, warmup volume, reply and other warmup rates, warmup score, and ramp-up turned off on a new inbox. A rate between 0 and 1 gets a hint, because the platform reads those fields as percentages. `--strict` exits 1 when an inbox is flagged.
 - `lead-engine placement send` sends one test email from every sending inbox to the seed mailboxes you own (`[[placement.seeds]]`), with a run token in the subject. It is a dry run unless you add `--send`. `placement read` opens each seed over IMAP, read-only, and finds each message in the inbox or spam folder by the token and the From address. `placement report` prints each sending domain with **keep** only if every seed message from every inbox on it reached the inbox; any spam or missing message benches the domain. Moving inboxes in or out of a campaign stays your decision. Gmail's Promotions tab is not visible over IMAP, so "inbox" means the INBOX folder.
 
+Seed runs are saved before the first request and after each accepted send. If interrupted, resume with `uv run --env-file .env lead-engine placement send --send --run out/placement/run-seed-TOKEN.json`, using the actual saved filename. Resume requires unchanged senders, seed addresses, subject and body. It sends only pending entries, skipping accepted and unresolved entries. A new run is blocked while an earlier run is unfinished. Inspect unresolved sends in the platform and seed mailboxes; never turn them back into pending entries without proving that no send occurred. Any spam copy benches the domain even if an inbox copy also exists.
+
 ## Safety rules
 
 - **This tool never sends email to prospects.** It adds leads to a campaign, and the platform sends on the campaign's own schedule and settings. The Instantly client has exactly two write paths, adding leads and one test email for the seed test, and refuses any other path before a request is made. It cannot launch, pause or edit a campaign or an account.
-- **Hand-off is a dry run by default.** The dry run writes the exact requests live mode would send to `out/handoff/` and leaves leads `ready`. Live mode needs `INSTANTLY_API_KEY`, `INSTANTLY_CAMPAIGN_ID` and `[handoff] mode = "live"`. `skip_if_in_workspace` is always set, so nobody already in your workspace is added again.
-- **Suppressions are checked three times:** domains at discovery, addresses and domains at the gate, and again right before each hand-off batch.
+- **Hand-off is a dry run by default.** The dry run writes the exact requests live mode would send to `out/handoff/` and leaves leads `ready`. Live mode needs `INSTANTLY_API_KEY`, `INSTANTLY_CAMPAIGN_ID` and `[handoff] mode = "live"`. `skip_if_in_workspace` is always set. SQLite records intent before each POST; malformed replies, timeouts and crashes leave that intent unresolved and block resubmission. Only a fully accounted batch can mark leads handed off or skipped.
+- **Suppressions are checked three times:** domains at discovery, addresses and domains at the gate, and a fresh read of the configured CSV right before each live hand-off batch. Missing files, invalid headers and malformed entries stop processing; an empty list requires a valid header-only CSV.
 - **The seed test only sends with `--send`,** and only to the seed mailboxes you list.
-- **Fetching is polite.** robots.txt is obeyed, the user agent names the tool (put your own contact URL in `[fetch] user_agent`), requests to one site are spaced out, and only pages on the business's own site are read.
+- **Fetching is polite.** robots.txt is obeyed, the user agent names the tool (put your own contact URL in `[fetch] user_agent`), requests to one site are spaced out, and only pages on the business's own site are read. Every website redirect is checked before following it. API redirects are rejected.
 - **Secrets** come from environment variables. Errors never include them.
 - **Your data stays local.** State, exports, `lead-engine.toml`, `voice.toml` and CSV files at the repo root are git-ignored.
 - You are responsible for following the laws and platform rules that apply to the emails your campaigns send.
+
+`lead-engine status` reports hand-offs awaiting reconciliation. Inspect the `handoff_writes` table in `state/leads.db` and the platform's records before any manual correction. Keep unresolved records until the outcome is proven; restarting a run does not clear them.
 
 ## Configuration
 

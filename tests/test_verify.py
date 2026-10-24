@@ -82,6 +82,29 @@ def test_things_that_are_not_proof(text):
     assert find_people([page(text)], SETTINGS["roles"], "Harbor Ledger") == []
 
 
+@pytest.mark.parametrize("text", ["Former owner Pat Example has retired.", "Pat Example\nFormer Owner",
+    "Pat Example, Owner (retired).", "Pat Example\nOwner\nRetired in 2024.",
+    "Late founder Pat Example opened the firm.", "Pat Example, previous president.",
+    "Pat Example\nAssistant to the Owner", "Pat Example, Owner. Retired in 2024."])
+def test_non_current_role_contexts_are_not_proof(text):
+    assert find_people([page(text)], SETTINGS["roles"], "Shop") == []
+
+
+def test_non_current_schema_titles_are_not_proof():
+    p = page("Team", jsonld=[{"@type": "Person", "name": "Pat Example", "jobTitle": "Former Owner"}])
+    assert find_people([p], SETTINGS["roles"], "Shop") == []
+
+
+def test_assistant_schema_title_is_not_an_owner():
+    p = page("Team", jsonld=[{"@type": "Person", "name": "Pat Example", "jobTitle": "Assistant to the Owner"}])
+    assert find_people([p], SETTINGS["roles"], "Shop") == []
+
+
+@pytest.mark.parametrize("sentence", ["Pat Example founded the firm.", "The firm was owned by Pat Example."])
+def test_inferred_roles_must_be_enabled(sentence):
+    assert find_people([page(sentence)], ["president"], "Shop") == []
+
+
 def test_a_sentence_on_the_site_beats_a_schema_node_alone():
     ld = [{"@type": "LocalBusiness", "founder": {"@type": "Person", "name": "Lee Sample"}}]
     p = page("Owner: Pat Example", jsonld=ld)
@@ -133,6 +156,31 @@ def test_mailto_addresses_are_cited_by_their_link():
     assert fact["quote"] == "mailto:dana.whitlock@example.com" and supported(fact, [p])
 
 
+@pytest.mark.parametrize("method", ["text", "mailto"])
+def test_email_cannot_supply_its_own_nearby_name(method, monkeypatch):
+    monkeypatch.setattr(verify, "FREE_MAIL", {"example.net"})
+    address = "dana@example.net"
+    p = page("Contact", emails=[(address, "Write to " + address, method)])
+    assert find_email([p], person(), "shop.example.com")[0] is None
+
+
+def test_staff_address_is_not_bound_to_the_owner_in_the_same_paragraph():
+    context = "Dana Whitlock, Owner; payroll clerk Lee Sample can be reached at lee.s@example.com."
+    p = page(context, emails=[("lee.s@example.com", context, "text")])
+    assert find_email([p], person(), "shop.example.com")[0] is None
+
+
+def test_absent_opener_facts_wait_for_an_unreadable_page(tmp_path, clock):
+    from helpers import add_site, make_engine
+    transport = html_transport({SITE + "/": '<a href="/about">About</a><p>Pat Example, Owner.</p>'
+                               '<p>pat@example.com</p>'}, timeouts={SITE + "/about": 1})
+    engine = make_engine(tmp_path, clock, transport=transport)
+    lead_id = add_site(engine.store, "shop.example.com", "Shop")
+    engine.tick(discover=False, handoff=False)
+    lead = engine.store.get(lead_id)
+    assert lead["stage"] == "discovered" and lead["attempts"] == 1
+
+
 def test_opener_facts_and_their_values():
     text = ("Dana Whitlock founded Harbor Ledger Co. in 2009 after a decade in restaurants.\n"
             "Serving Cedar Hollow since 2014.\nWe have 15 years of experience with payroll.\n"
@@ -169,6 +217,21 @@ def test_every_demo_lead_that_verifies_is_fully_supported():
         if isinstance(out, Advance):
             pages = [Page.from_dict(p) for p in out.data["pages"]]
             assert all(supported(f, pages) for f in out.data["facts"]), site
+
+
+def test_late_page_evidence_survives_snapshot_serialization():
+    body = "".join("<p>General shop information item %d.</p>" % i for i in range(1400))
+    body += "<p>Pat Example, Owner.</p><p>Email Pat: pat@example.com</p><p>Founded in 2012.</p>"
+    out = run("shop.example.com", html_transport({SITE + "/": body}))
+    assert isinstance(out, Advance)
+    snapshots = [Page.from_dict(p) for p in out.data["pages"]]
+    assert all(supported(f, snapshots) for f in out.data["facts"])
+
+
+def test_absent_fit_terms_wait_for_unreadable_pages():
+    transport = html_transport({SITE + "/": HOME}, timeouts={SITE + "/about": 1})
+    with pytest.raises(StepError, match="could not read"):
+        run("shop.example.com", transport, settings={**SETTINGS, "require_any": ["bookkeeping"]})
 
 
 def test_nothing_named_is_a_drop_but_an_unreadable_page_is_a_retry():

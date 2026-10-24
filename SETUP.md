@@ -10,38 +10,40 @@ uv run lead-engine demo
 
 Walk the owner through the output: three scheduled runs, the repair-cycle lines (retry, CRASH, resumed, repaired, retired), the backlog pass, and the openers with the quote each one is built from. Open `lead-engine-demo/out/ready.csv` to show that every fact carries its source URL and quote. Done when the demo prints "Totals: 5 ready, 4 dropped, 1 retired, 10 leads in all."
 
+Use an empty destination. Rerunning a marked demo requires `uv run lead-engine demo --reset`; `--reset` cannot erase an unmarked directory.
+
 ## 2. Decide who to find
 
-Run `uv run lead-engine init` to create `lead-engine.toml`, `voice.toml` and `suppressions.csv`, then ask:
+Run `uv run lead-engine init` to create `lead-engine.toml`, `voice.toml` and `suppressions.csv`. Copy `.env.example` to `.env`, leaving values blank until each feature is connected. Manual commands below use `uv run --env-file .env` to load it; the CLI does not load `.env` itself. Then ask:
 
 1. **Markets.** Cities or areas as "City, ST" strings.
 2. **Keywords.** What the target businesses call themselves on a map listing ("bookkeeping firm", "home inspection"). Every market is searched with every keyword.
 3. **Decision-maker roles.** The default list runs from owner and founder down to general manager. Remove roles the owner doesn't want to email.
 4. **Fit.** `require_any`: words a fitting business's site should contain. `exclude_any`: signs of a chain or a poor fit (the defaults catch franchise pages).
 
-Done when `uv run lead-engine check` prints "Config OK" and the number of searches you agreed.
+Done when `uv run --env-file .env lead-engine check` prints "Config OK" and the number of searches you agreed.
 
 ## 3. Voice and suppressions
 
-- **voice.toml.** Ask for phrases they never want in an email, the longest opener they would send, and a reading level. Rewrite the `[templates]` in their words; a template may only restate its fact, so no added numbers, names or claims. If they plan to use the model writer, replace `examples` with lines they have actually written.
-- **suppressions.csv.** Export unsubscribes, bounces and do-not-contact entries from their email platform and CRM into the `email` and `domain` columns. Every run re-reads the file, so keep it current.
+- **voice.toml.** Ask for phrases they never want in an email, the longest opener they would send, and a reading level. Rewrite the `[templates]` in their words; a template may only restate its fact, so no added numbers, names or claims. Keep more distinct openings per fact kind than `distinct_window`. If they plan to use the model writer, replace `examples` with lines they have actually written.
+- **suppressions.csv.** Export unsubscribes, bounces and do-not-contact entries from their email platform and CRM into the `email` and `domain` columns. A missing or malformed file stops processing. A header-only CSV is the explicit empty list. Live hand-off reloads it before every batch, so keep it current.
 - **User agent.** Set `[fetch] user_agent` to name their business with a contact URL, so site owners can see who is reading their pages.
 
-Done when `uv run lead-engine check` shows the voice file as OK and the suppression counts you expect.
+Done when `uv run --env-file .env lead-engine check` shows the voice file as OK and the suppression counts you expect.
 
 ## 4. Connect discovery
 
 - **Google Places** (`[discovery] source = "places"`): in a Google Cloud project, enable the Places API (New), create an API key restricted to it, and set a budget alert. Put it in `GOOGLE_PLACES_API_KEY`. Tell the owner that each search is billed at the Text Search Enterprise rate because it asks for websites, and that `cells_per_tick` times `pages_per_search` caps the searches per run.
 - **CSV** (`source = "csv"`): if they already have a list, put it in `import.csv` with the columns from `examples/import.csv`.
 
-Done when `uv run lead-engine check` shows "GOOGLE_PLACES_API_KEY set" or the CSV as found.
+Done when `uv run --env-file .env lead-engine check` shows "GOOGLE_PLACES_API_KEY set" or the CSV as found.
 
 ## 5. First run, with the hand-off as a dry run
 
 ```bash
-uv run lead-engine run
-uv run lead-engine status
-uv run lead-engine export
+uv run --env-file .env lead-engine run
+uv run --env-file .env lead-engine status
+uv run --env-file .env lead-engine export
 ```
 
 Review `out/ready.csv` with the owner: for each ready lead, the role quote, the address and its quote, and the opener with its evidence. Read the drop reasons in `status`. If many leads are dropped for a reason the owner disagrees with, adjust `[verify]` (roles, fit terms) or the voice rules. Do not loosen the evidence checks in `src/lead_engine/verify.py` or `voice.py` to let more leads through.
@@ -52,7 +54,7 @@ Done when the owner has reviewed at least ten ready leads and agrees they are th
 
 Pick the example for their system in `examples/scheduling/` (launchd on macOS, systemd on Linux, cron anywhere), replace `/path/to/lead-engine` and `/path/to/uv` (`which uv`), and install it. The cron example also schedules a weekly `backlog` and a daily `warmup --strict`.
 
-Done when `uv run lead-engine status` lists runs about 15 minutes apart.
+Done when `uv run --env-file .env lead-engine status` lists runs about 15 minutes apart.
 
 ## 7. Hand-off to Instantly: dry run first, live only on request
 
@@ -61,10 +63,14 @@ Done when `uv run lead-engine status` lists runs about 15 minutes apart.
 3. Leave `[handoff] mode = "dry-run"` for a few runs. Compare the files in `out/handoff/` with what the owner expects.
 4. Only when the owner explicitly asks, set `mode = "live"`. Nothing else changes: the same leads, the same checks.
 
+An uncertain POST leaves leads ready but blocks automatic resubmission. `status` shows the count awaiting reconciliation. Inspect SQLite's `handoff_writes` records and the platform before manually correcting local state; never clear unresolved records just to retry.
+
 ## 8. Deliverability checks
 
-- **Warmup audit:** add the `accounts:read` scope and run `uv run lead-engine warmup`. Go through every flagged inbox with the owner and change settings in Instantly yourself only if they ask. Adjust `[warmup]` ranges if their provider recommends different values.
-- **Seed test:** ask for two or more mailboxes they own on different providers (for example one Gmail and one Outlook), create IMAP app passwords, add a `[[placement.seeds]]` block per mailbox with the inbox and spam folder names, and put the credentials in the env vars it names. The seed test lists the sending inboxes (`accounts:read`) and sends through the test-email endpoint (`emails:create`), so the key needs both scopes. Set `[placement] body_file` to their real first email. `uv run lead-engine placement send` shows how many emails would go out. Run it with `--send` only when the owner says to, wait about five minutes, then run `placement read` and `placement report`. Benching a domain is the owner's decision, made in Instantly.
+- **Warmup audit:** add the `accounts:read` scope and run `uv run --env-file .env lead-engine warmup`. Go through every flagged inbox with the owner and change settings in Instantly yourself only if they ask. Adjust `[warmup]` ranges if their provider recommends different values.
+- **Seed test:** ask for two or more mailboxes they own on different providers (for example one Gmail and one Outlook), create IMAP app passwords, add a `[[placement.seeds]]` block per mailbox with the inbox and spam folder names, and put the credentials in the env vars it names. The seed test lists the sending inboxes (`accounts:read`) and sends through the test-email endpoint (`emails:create`), so the key needs both scopes. Set `[placement] body_file` to their real first email. `uv run --env-file .env lead-engine placement send` shows how many emails would go out. Run it with `--send` only when the owner says to, wait about five minutes, then run `uv run --env-file .env lead-engine placement read` and `uv run --env-file .env lead-engine placement report`. Benching a domain is the owner's decision, made in Instantly.
+
+If a seed send is interrupted, use `uv run --env-file .env lead-engine placement send --send --run out/placement/run-seed-TOKEN.json` with its saved filename. The command checks that senders, seeds, subject and body still match. Accepted and unresolved entries are skipped; only pending entries are sent. A new run is blocked until the earlier run is complete. Investigate unresolved entries in the platform and seed mailboxes before any manual correction; do not reset them to pending without proving no send occurred.
 
 ## 9. Optional: the model writer
 
@@ -72,4 +78,4 @@ If the owner wants openers written by a model instead of templates: `uv sync --e
 
 ## 10. Stranded leads
 
-If the owner has half-researched leads from another tool, put them in a CSV with the columns from `examples/stranded.csv` and run `uv run lead-engine backlog --import stranded.csv`. Explain the four results (recovered, changed, dropped, inconclusive). Run `uv run lead-engine backlog` again whenever `status` shows retired leads; inconclusive ones are retried on the next pass.
+If the owner has half-researched leads from another tool, put them in a CSV with the columns from `examples/stranded.csv` and run `uv run --env-file .env lead-engine backlog --import stranded.csv`. Explain the four results (recovered, changed, dropped, inconclusive). Run `uv run --env-file .env lead-engine backlog` again whenever `status` shows retired leads; inconclusive ones are retried on the next pass. A shared dependency outage stops the pass and leaves the remaining leads untouched.

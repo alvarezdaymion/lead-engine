@@ -4,5 +4,5 @@
 */15 * * * * cd /path/to/lead-engine && set -a && . ./.env && set +a && /path/to/uv run lead-engine run --quiet >> state/cron.log 2>&1
 # Re-check the stranded pile once a week (Monday 07:00).
 0 7 * * 1 cd /path/to/lead-engine && set -a && . ./.env && set +a && /path/to/uv run lead-engine backlog >> state/cron.log 2>&1
-# Audit warmup settings every morning; --strict exits 1 when an inbox is flagged, so cron mails you.
-30 6 * * * cd /path/to/lead-engine && set -a && . ./.env && set +a && /path/to/uv run lead-engine warmup --strict >> state/cron.log 2>&1
+# Audit warmup settings every morning; leave output for cron mail (requires a configured mail service).
+30 6 * * * cd /path/to/lead-engine && set -a && . ./.env && set +a && /path/to/uv run lead-engine warmup --strict

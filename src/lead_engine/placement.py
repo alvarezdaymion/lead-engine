@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import email
 import email.utils
+import hashlib
 import imaplib
 import json
 import os
+import re
 import secrets
 import time
 from collections import Counter
@@ -27,6 +29,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .html import EMAIL_RE
+from .http import HttpError
 
 BAD = ("spam", "missing")
 
@@ -52,20 +57,88 @@ def domain(address: str) -> str:
 
 
 def send(client: Any, senders: list[str], seeds: list[Seed], subject: str, html: str, *, dry_run: bool = True,
-         interval: float = 6.5, sleep: Callable[[float], None] = time.sleep, token: str | None = None
+         interval: float = 6.5, sleep: Callable[[float], None] = time.sleep, token: str | None = None,
+         out_dir: Path | None = None, run: dict[str, Any] | None = None
          ) -> dict[str, Any]:
-    token = token or "seed-" + secrets.token_hex(3)
-    run: dict[str, Any] = {"token": token, "subject": "%s [%s]" % (subject, token), "dry_run": dry_run,
-                           "seeds": [s.address for s in seeds], "sends": []}
-    for i, sender in enumerate(senders):
-        accepted = None
+    addresses = [s.address.lower() for s in seeds]
+    senders = [s.lower() for s in senders]
+    if (not addresses or any(not EMAIL_RE.fullmatch(s) for s in addresses + senders)
+            or len(set(senders)) != len(senders) or len(set(addresses)) != len(addresses)
+            or set(senders) & set(addresses)):
+        raise ValueError("seed test needs distinct valid sending and seed addresses")
+    if not dry_run and out_dir is None:
+        raise ValueError("live seed sends require a durable run directory")
+    digest = hashlib.sha256(html.encode()).hexdigest()
+    if run is not None:
+        if dry_run or out_dir is None:
+            raise ValueError("resume requires --send and the saved run directory")
+        _validate_resume(run, senders, addresses, subject, digest)
+        path = out_dir / ("run-%s.json" % run["token"])
+        if json.loads(path.read_text()) != run:
+            raise ValueError("seed run changed; reload it before resuming")
+    else:
         if not dry_run:
-            if i:
-                sleep(interval)
-            resp = client.send_test_email(sender, run["seeds"], run["subject"], html)
-            accepted = resp.get("status") == "success"
-        run["sends"].append({"sender": sender, "accepted": accepted})
+            for path in out_dir.glob("run-*.json"):
+                previous = json.loads(path.read_text())
+                _validate_saved_run(previous)
+                if path.name != "run-%s.json" % previous["token"]:
+                    raise ValueError("seed run filename does not match its token")
+                if any(s["accepted"] is not True for s in previous["sends"]):
+                    raise ValueError("unfinished seed run; resume with placement send --send --run %s" % path)
+        token = token or "seed-" + secrets.token_hex(6)
+        run = {"version": 1, "token": token, "subject": "%s [%s]" % (subject, token), "dry_run": dry_run,
+               "body_sha256": digest, "seeds": addresses,
+               "sends": [{"sender": s, "accepted": None, "status": "pending"} for s in senders]}
+        if not dry_run:
+            if (out_dir / ("run-%s.json" % token)).exists():
+                raise ValueError("seed run already exists; resume it explicitly")
+            save(run, out_dir)
+    attempted = False
+    for item in run["sends"]:
+        if dry_run or item["status"] != "pending":
+            continue
+        if attempted:
+            sleep(interval)
+        item["status"] = "unresolved"
+        save(run, out_dir)
+        resp = client.send_test_email(item["sender"], run["seeds"], run["subject"], html)
+        if not isinstance(resp, dict) or resp.get("status") != "success":
+            raise HttpError("unresolved seed send: response did not confirm acceptance")
+        item.update(accepted=True, status="accepted")
+        save(run, out_dir)
+        attempted = True
     return run
+
+
+def _validate_saved_run(run: Any) -> None:
+    if not isinstance(run, dict):
+        raise ValueError("seed run must be a JSON object")
+    token = run.get("token")
+    items = run.get("sends")
+    if (run.get("version") != 1 or not isinstance(token, str) or not re.fullmatch(r"seed-[a-z0-9-]+", token)
+            or run.get("dry_run") is not False or not isinstance(run.get("body_sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", run["body_sha256"])
+            or not isinstance(run.get("subject"), str) or not run["subject"].endswith(" [%s]" % token)
+            or not isinstance(run.get("seeds"), list) or not run["seeds"] or not isinstance(items, list)
+            or any(not isinstance(s, dict) or not isinstance(s.get("sender"), str) for s in items)):
+        raise ValueError("seed run is incomplete or malformed")
+    addresses = run["seeds"] + [s["sender"] for s in items]
+    if (any(not isinstance(a, str) or not EMAIL_RE.fullmatch(a) for a in addresses)
+            or len(set(a.lower() for a in addresses)) != len(addresses)):
+        raise ValueError("seed run has invalid or repeated addresses")
+    for item in items:
+        status = item.get("status")
+        if (status not in ("accepted", "pending", "unresolved") or "accepted" not in item
+                or (item["accepted"] is not True if status == "accepted" else item["accepted"] is not None)):
+            raise ValueError("seed run has an invalid send status")
+
+
+def _validate_resume(run: dict[str, Any], senders: list[str], addresses: list[str], subject: str, digest: str) -> None:
+    _validate_saved_run(run)
+    if (run["body_sha256"] != digest or run["seeds"] != addresses
+            or run["subject"] != "%s [%s]" % (subject, run["token"])
+            or [s["sender"] for s in run["sends"]] != senders):
+        raise ValueError("seed run does not match the current senders, seeds, subject and body")
 
 
 def _quote(folder: str) -> str:
@@ -107,7 +180,7 @@ def read(run: dict[str, Any], seeds: list[Seed], connect: Callable[[Seed], Any] 
             spam = _senders_in(imap, seed.spam, run["token"])
         finally:
             imap.logout()
-        by_seed[seed.address] = {**{s: "spam" for s in spam}, **{s: "inbox" for s in inbox}}
+        by_seed[seed.address] = {**{s: "inbox" for s in inbox}, **{s: "spam" for s in spam}}
     for send_ in run["sends"]:
         send_["placement"] = {seed: by_seed.get(seed, {}).get(send_["sender"].lower(), "missing")
                               for seed in run["seeds"]}
@@ -129,9 +202,21 @@ def report(run: dict[str, Any]) -> dict[str, dict[str, Any]]:
 
 
 def save(run: dict[str, Any], directory: Path) -> Path:
+    if not isinstance(run.get("token"), str) or not re.fullmatch(r"seed-[a-z0-9-]+", run["token"]):
+        raise ValueError("invalid seed run token")
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / ("run-%s.json" % run["token"])
-    path.write_text(json.dumps(run, indent=2) + "\n")
+    temporary = path.with_suffix(".json.tmp")
+    with temporary.open("w") as f:
+        f.write(json.dumps(run, indent=2) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    temporary.replace(path)
+    handle = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(handle)
+    finally:
+        os.close(handle)
     return path
 
 

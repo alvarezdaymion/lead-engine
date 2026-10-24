@@ -7,6 +7,7 @@ import pytest
 from lead_engine import cli
 from lead_engine.demo import DATA, SiteTransport
 from lead_engine.fetch import Fetcher
+from lead_engine.http import HttpError
 
 
 def test_demo_runs_end_to_end_without_keys_or_network(tmp_path, capsys, monkeypatch):
@@ -24,6 +25,29 @@ def test_demo_runs_end_to_end_without_keys_or_network(tmp_path, capsys, monkeypa
     assert "ready 5" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("reset", [False, True])
+def test_demo_refuses_unmarked_user_directories(tmp_path, reset):
+    directory = tmp_path / "user-data"
+    (directory / "state").mkdir(parents=True)
+    saved = directory / "state" / "keep.txt"
+    saved.write_text("keep")
+    config = directory / "lead-engine.toml"
+    config.write_text("# keep\n")
+    command = ["demo", "--dir", str(directory)] + (["--reset"] if reset else [])
+    assert cli.main(command) == 2
+    assert saved.read_text() == "keep" and config.read_text() == "# keep\n"
+
+
+def test_demo_reset_requires_marker_and_explicit_flag(tmp_path, capsys):
+    directory = tmp_path / "demo"
+    assert cli.main(["demo", "--dir", str(directory)]) == 0
+    counts = (directory / "out" / "ready.csv").read_text()
+    assert cli.main(["demo", "--dir", str(directory)]) == 2
+    assert (directory / "out" / "ready.csv").read_text() == counts
+    assert cli.main(["demo", "--dir", str(directory), "--reset"]) == 0
+    assert "Totals: 5 ready, 4 dropped, 1 retired, 10 leads in all." in capsys.readouterr().out
+
+
 def test_init_then_check(tmp_path, capsys, monkeypatch):
     config = tmp_path / "lead-engine.toml"
     assert cli.main(["init", "--config", str(config)]) == 0
@@ -38,6 +62,7 @@ def test_init_then_check(tmp_path, capsys, monkeypatch):
 
 
 def write_config(tmp_path, extra=""):
+    (tmp_path / "suppressions.csv").write_text("email,domain\n")
     (tmp_path / "import.csv").write_text(
         "company,website,market,keyword\n"
         "Harbor Ledger Co.,https://harbor-ledger.example.com/,\"Cedar Hollow, OR\",bookkeeping firm\n"
@@ -117,6 +142,35 @@ def test_placement_report_needs_a_read_run(tmp_path, capsys):
     run_dir.mkdir(parents=True)
     (run_dir / "run-seed-1.json").write_text(json.dumps({"token": "seed-1", "seeds": [], "sends": []}))
     assert cli.main(["placement", "report", "--config", str(config)]) == 1
+
+
+def test_partial_placement_command_preserves_progress_and_requires_explicit_resume(tmp_path, monkeypatch):
+    config = write_config(tmp_path, '[[placement.seeds]]\naddress = "seed-one@example.com"\nhost = "imap.example.com"\n'
+                                    'user_env = "S1_USER"\npassword_env = "S1_PASS"\n')
+
+    class Client(FakeInstantly):
+        accounts_list = [{"email": "a@example.com"}, {"email": "b@example.org"}, {"email": "c@example.com"}]
+
+        def send_test_email(self, sender, *args):
+            self.sent.append(sender)
+            if sender == "b@example.org":
+                raise HttpError("connection lost")
+            return {"status": "success"}
+
+    client = Client()
+    monkeypatch.setattr(cli, "InstantlyClient", lambda: client)
+    monkeypatch.setattr(cli.placement_mod.time, "sleep", lambda _: None)
+    original = cli.placement_mod.send
+    monkeypatch.setattr(cli.placement_mod, "send", lambda *a, **kw: original(*a, **kw, sleep=lambda _: None))
+    command = ["placement", "send", "--send", "--config", str(config)]
+    assert cli.main(command) == 2
+    path = cli.placement_mod.latest(tmp_path / "out" / "placement")
+    assert json.loads(path.read_text())["sends"][0]["accepted"] is True
+    assert cli.main(command) == 2
+    assert client.sent == ["a@example.com", "b@example.org"]
+    assert cli.main([*command, "--run", str(path)]) == 1
+    assert client.sent == ["a@example.com", "b@example.org", "c@example.com"]
+    assert len(list(path.parent.glob("run-*.json"))) == 1
 
 
 def test_errors_are_reported_cleanly(tmp_path, capsys):

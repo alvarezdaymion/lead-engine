@@ -61,6 +61,49 @@ def test_evidence_that_no_longer_matches_its_page_fails(written):
         run_gate(tampered)
 
 
+def test_gate_rechecks_the_person_address_relationship(written):
+    tampered = copy.deepcopy(written)
+    data = tampered["data"]
+    email_fact = next(f for f in data["facts"] if f["id"] == data["email"]["fact_id"])
+    url = email_fact["source_url"]
+    source = next(p for p in data["pages"] if p["final_url"] == url)
+    context = "Dana Whitlock, Owner; payroll clerk Lee Sample answers at lee.s@example.com."
+    source["text"] += "\n" + context
+    source["emails"] = [("lee.s@example.com", context, "text")]
+    email_fact.update(value={"email": "lee.s@example.com", "binding": "printed beside the name"},
+                      quote=context, method="text")
+    data["email"]["address"] = "lee.s@example.com"
+    with pytest.raises(StepError):
+        run_gate(tampered)
+
+
+def test_gate_person_must_match_the_cited_person_facts(written):
+    tampered = copy.deepcopy(written)
+    tampered["data"]["person"].update(full_name="Pat Example", first_name="Pat", last_name="Example")
+    for p in tampered["data"]["pages"]:
+        p["text"] += "\nPat Example, Owner."
+    email_fact = next(f for f in tampered["data"]["facts"] if f["id"] == tampered["data"]["email"]["fact_id"])
+    source = next(p for p in tampered["data"]["pages"] if p["final_url"] == email_fact["source_url"])
+    context = "Email Pat: pat@example.com"
+    source["text"] += "\n" + context
+    source["emails"] = [("pat@example.com", context, "text")]
+    email_fact.update(value={"email": "pat@example.com", "binding": "address matches the name"},
+                      quote=context, method="text")
+    tampered["data"]["email"]["address"] = "pat@example.com"
+    with pytest.raises(StepError):
+        run_gate(tampered)
+
+
+def test_gate_preserves_a_configured_specific_role(tmp_path, clock):
+    from helpers import html_transport
+    transport = html_transport({"https://shop.example.com/": "<p>Pat Example, Senior Principal.</p>"
+                               "<p>Email Pat: pat@example.com</p><p>Founded in 2012.</p>"})
+    engine = make_engine(tmp_path, clock, transport=transport, settings={"verify": {"roles": ["senior principal"]}})
+    lead_id = add_site(engine.store, "shop.example.com", "Shop")
+    engine.tick(discover=False, handoff=False)
+    assert engine.store.get(lead_id)["stage"] == "ready"
+
+
 def test_an_opener_that_breaks_changed_voice_rules_goes_back_to_be_rewritten(written):
     voice = load_voice(EXAMPLE)
     stricter = Voice(**{**voice.__dict__, "banned_phrases": voice.banned_phrases + ["since"]})
@@ -69,5 +112,17 @@ def test_an_opener_that_breaks_changed_voice_rules_goes_back_to_be_rewritten(wri
     assert "opener" not in out.data and "banned phrase" in out.data["rewrite_reason"]
 
 
-def test_missing_suppression_file_is_an_empty_list(tmp_path):
-    assert len(load_suppressions(tmp_path / "nope.csv")) == 0
+def test_missing_suppression_file_fails_closed(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_suppressions(tmp_path / "nope.csv")
+
+
+@pytest.mark.parametrize("text", ["", "address\nx@example.com\n", "email,domain\ninvalid,\n",
+                                  "email,domain\n,https://example.com\n", "email,domain\nx@example.com\n",
+                                  'email,domain\n"unfinished\n', "email,Domain\n,example.com\n",
+                                  "email,domian\n,example.com\n"])
+def test_malformed_suppressions_fail_closed(tmp_path, text):
+    path = tmp_path / "suppressions.csv"
+    path.write_text(text)
+    with pytest.raises(ValueError):
+        load_suppressions(path)

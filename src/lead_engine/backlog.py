@@ -76,6 +76,7 @@ def requalify(engine: Engine, limit: int | None = None) -> dict[str, Any]:
     run_id = store.start_run("backlog")
     pile = stranded(engine)[: limit if limit is not None else None]
     rows: list[dict[str, Any]] = []
+    stop_reason = ""
     for lead in pile:
         prior = _prior(lead)
         row: dict[str, Any] = {"id": lead["id"], "company": lead["company"], "was": lead["stage"]}
@@ -112,8 +113,11 @@ def requalify(engine: Engine, limit: int | None = None) -> dict[str, Any]:
         if line.get("reason"):
             row["then"] += " (%s)" % line["reason"]
         rows.append(row)
+        if line["outcome"] == "released":
+            stop_reason = "shared outage: %s" % line["detail"]
+            break
     counts: dict[str, int] = {}
     for r in rows:
         counts[r["result"]] = counts.get(r["result"], 0) + 1
-    store.finish_run(run_id, {"outcomes": counts, "rechecked": len(rows)})
-    return {"rechecked": len(rows), "counts": counts, "leads": rows}
+    store.finish_run(run_id, {"outcomes": counts, "rechecked": len(rows), "stop_reason": stop_reason})
+    return {"rechecked": len(rows), "counts": counts, "leads": rows, "stop_reason": stop_reason}

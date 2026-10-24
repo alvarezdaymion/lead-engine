@@ -14,8 +14,6 @@ from dataclasses import asdict, dataclass, field
 from html import unescape
 from typing import Any
 
-TEXT_LIMIT = 20_000  # characters of visible text stored per page
-
 
 @dataclass
 class Page:
@@ -32,9 +30,7 @@ class Page:
     error: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        d = asdict(self)
-        d["text"] = d["text"][:TEXT_LIMIT]
-        return d
+        return asdict(self)
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Page:
@@ -98,27 +94,41 @@ def schema_quote(prop: str, person: dict) -> str:
 
 def supported(fact: dict[str, Any], pages: list[Page]) -> bool:
     """Whether a fact is still proven by the stored page it cites."""
+    from .html import EMAIL_RE
+    from .verify import find_people, opener_facts
+
     page = find_page(pages, str(fact.get("source_url") or ""))
     if page is None or not page.ok:
         return False
     method = fact.get("method")
+    kind = fact.get("kind")
     value = fact.get("value") or {}
     quote = str(fact.get("quote") or "")
-    if method == "schema.org":
-        name = str(value.get("full_name") or "")
-        role = str(value.get("role") or "") if value.get("role_from") == "jobTitle" else ""
-        return any(f"{prop}: " in quote and schema_node_matches(person, name, role)
-                   for prop, person in schema_people(page.jsonld))
-    if method == "mailto":
-        email = str(value.get("email") or "")
-        return any(e == email and m == "mailto" for e, _, m in page.emails)
-    if not quote_in(quote, page.title + "\n" + page.text):
+    if not isinstance(value, dict) or not value or any(not isinstance(v, str) or not v for v in value.values()):
         return False
-    if fact.get("kind") == "decision_maker":
-        return normalize(str(value.get("full_name") or "")) in normalize(quote)
-    if fact.get("kind") == "email":
-        return normalize(str(value.get("email") or "")) in normalize(quote)
-    return True
+    if method not in ("text", "mailto", "schema.org"):
+        return False
+    if method == "text" and not quote_in(quote, page.title + "\n" + page.text):
+        return False
+    if kind == "decision_maker" and method in ("text", "schema.org"):
+        role = value.get("role", "")
+        if not role:
+            return False
+        return any(candidate["value"] == value and candidate["method"] == method
+                   and normalize(candidate["quote"]) == normalize(quote)
+                   for person in find_people([page], [role], "") for candidate in person.facts)
+    if kind == "email" and method in ("text", "mailto"):
+        address = value.get("email", "")
+        if not EMAIL_RE.fullmatch(address) or value.get("binding") not in (
+                "address matches the name", "printed beside the name"):
+            return False
+        if method == "mailto":
+            return quote == "mailto:" + address and any(e == address and m == "mailto" for e, _, m in page.emails)
+        return address in {m.group(0).lower() for m in EMAIL_RE.finditer(quote)}
+    if kind in ("founded", "years", "specialty", "award") and method == "text":
+        passage = Page(page.url, page.final_url, page.status, True, text=quote)
+        return any(candidate["kind"] == kind and candidate["value"] == value for candidate in opener_facts([passage]))
+    return False
 
 
 _ABBREVIATIONS = ("Co", "Inc", "Ltd", "Mr", "Mrs", "Ms", "Dr", "St", "Jr", "Sr", "No")

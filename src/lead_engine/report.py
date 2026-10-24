@@ -64,8 +64,12 @@ def event_lines(store: Store, kind: str, payload: dict[str, Any], max_repairs: i
                                                                                 payload["campaign_id"])]
         if payload.get("mode") == "live":
             errors = payload.get("errors") or ([payload["error"]] if payload.get("error") else [])
-            return ["  hand-off: added %d, skipped %d%s" % (payload.get("added", 0), payload.get("skipped", 0),
+            lines = ["  hand-off: added %d, skipped %d%s" % (payload.get("added", 0), payload.get("skipped", 0),
                                                             ", error: %s" % errors[0] if errors else "")]
+            if payload.get("unresolved"):
+                lines.append("  hand-off: %d awaiting reconciliation; automatic resubmission blocked"
+                             % payload["unresolved"])
+            return lines
         if payload.get("error"):
             return ["  hand-off failed: %s" % payload["error"]]
         return []
@@ -101,6 +105,9 @@ def export_csv(store: Store, path: Path, stages: tuple[str, ...] = ("ready",)) -
 def status_lines(store: Store) -> list[str]:
     counts = store.counts()
     out = ["Leads by stage: " + ", ".join("%s %d" % kv for kv in counts.items())]
+    unresolved = store.unresolved_handoffs()
+    if unresolved:
+        out.append("Hand-off awaiting reconciliation: %d" % unresolved)
     for stage in ("dropped", "retired"):
         reasons = store.reasons(stage)
         if reasons:

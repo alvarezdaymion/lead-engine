@@ -5,6 +5,7 @@ from helpers import add_site, make_engine
 from lead_engine.backlog import import_stranded, requalify, stranded
 from lead_engine.demo import DATA, SiteTransport
 from lead_engine.names import same_person, split_name
+from lead_engine.outcome import SharedOutage
 
 CSV_HEADER = "company,website,first_name,last_name,email\n"
 
@@ -107,6 +108,25 @@ def test_backlog_runs_are_recorded(tmp_path, clock):
     requalify(engine)
     run = engine.store.runs(1)[0]
     assert run["kind"] == "backlog" and run["finished_at"]
+
+
+def test_shared_writer_outage_stops_the_backlog_without_touching_the_rest(tmp_path, clock):
+    class UnavailableWriter:
+        calls = 0
+
+        def draft(self, *args):
+            self.calls += 1
+            raise SharedOutage("model unavailable")
+
+    writer = UnavailableWriter()
+    engine = make_engine(tmp_path, clock, writer=writer)
+    import_stranded(engine, DATA / "stranded.csv")
+    before = engine.store.by_stage(("discovered",))
+    result = requalify(engine)
+    assert writer.calls == 1 and result["rechecked"] == 1
+    assert result["stop_reason"] == "shared outage: model unavailable"
+    assert all(engine.store.get(lead["id"]) == lead for lead in before[1:])
+    assert engine.store.get(before[0]["id"])["attempts"] == 0
 
 
 def test_same_person_matching():

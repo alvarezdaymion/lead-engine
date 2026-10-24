@@ -68,7 +68,8 @@ def build_engine(cfg: config_mod.Config, notify: Any = None) -> Engine:
 
     def handoff(s: Store) -> dict[str, Any]:
         client = InstantlyClient() if cfg["handoff"]["mode"] == "live" else None
-        return run_handoff(s, cfg["handoff"], suppressions=suppressions, out_dir=cfg.out_dir / "handoff", client=client)
+        return run_handoff(s, cfg["handoff"], suppressions=suppressions, out_dir=cfg.out_dir / "handoff", client=client,
+                           suppression_file=cfg.path(cfg["gate"]["suppression_file"]))
 
     return Engine(cfg.data, store, fetcher=fetcher, writer=writer, voice=voice, suppressions=suppressions,
                   discover=build_discovery(cfg, suppressions), handoff=handoff, notify=notify)
@@ -83,7 +84,7 @@ def _printer(holder: dict[str, Any], max_repairs: int) -> Any:
 
 def cmd_demo(args: argparse.Namespace) -> int:
     from .demo import run
-    return run(Path(args.dir))
+    return run(Path(args.dir), reset=args.reset)
 
 
 def cmd_init(args: argparse.Namespace) -> int:
@@ -99,7 +100,8 @@ def cmd_init(args: argparse.Namespace) -> int:
     if not supp.exists():
         supp.write_text("email,domain\n")
     print("Wrote %s, %s and %s." % (dest, voice, supp))
-    print("Edit markets, keywords and the voice rules, put credentials in .env, then run: lead-engine check")
+    print("Edit markets, keywords and the voice rules, copy .env.example to .env and fill in credentials, then run: "
+          "uv run --env-file .env lead-engine check")
     return 0
 
 
@@ -196,6 +198,8 @@ def cmd_backlog(args: argparse.Namespace) -> int:
             then = " -> %s" % r["then"] if r.get("then") else ""
             print("  #%-4d %-28s %-12s %s%s" % (r["id"], r["company"][:28], r["result"], r["detail"][:100], then))
         print("Results: " + (", ".join("%s %d" % kv for kv in sorted(result["counts"].items())) or "nothing stranded"))
+        if result["stop_reason"]:
+            print("Stopped: " + result["stop_reason"])
     return 0
 
 
@@ -229,27 +233,42 @@ def cmd_placement(args: argparse.Namespace) -> int:
         if not seeds:
             print("Add [[placement.seeds]] to %s first." % args.config)
             return 1
-        client = InstantlyClient()
-        seed_addresses = {s.address.lower() for s in seeds}
-        wanted = {d.lower() for d in p["sender_domains"]}
-        senders = sorted(a["email"] for a in client.accounts() if a.get("email")
-                         and a["email"].lower() not in seed_addresses
-                         and (not wanted or placement_mod.domain(a["email"]) in wanted))
-        html = cfg.path(p["body_file"]).read_text() if p["body_file"] else SAMPLE_BODY
-        run = placement_mod.send(client, senders, seeds, p["subject"], html, dry_run=not args.send)
+        with TickLock(out / "send.lock") as acquired:
+            if not acquired:
+                raise RuntimeError("another seed test is in progress")
+            client = InstantlyClient()
+            seed_addresses = {s.address.lower() for s in seeds}
+            wanted = {d.lower() for d in p["sender_domains"]}
+            senders = sorted(a["email"] for a in client.accounts() if a.get("email")
+                             and a["email"].lower() not in seed_addresses
+                             and (not wanted or placement_mod.domain(a["email"]) in wanted))
+            html = cfg.path(p["body_file"]).read_text() if p["body_file"] else SAMPLE_BODY
+            saved = None
+            if args.run:
+                path = Path(args.run)
+                if path.resolve().parent != out.resolve():
+                    raise ValueError("resume file must be in the configured placement output directory")
+                saved = json.loads(path.read_text())
+            run = placement_mod.send(client, senders, seeds, p["subject"], html, dry_run=not args.send,
+                                     out_dir=out, run=saved)
         if not args.send:
             print("Dry run: would send %d test email(s), %d sending inbox(es) x %d seed(s). Add --send to send."
                   % (len(senders) * len(seeds), len(senders), len(seeds)))
             return 0
-        path = placement_mod.save(run, out)
-        print("Sent from %d inbox(es); %d accepted. Saved %s. Wait about 5 minutes, then: lead-engine placement read"
-              % (len(run["sends"]), sum(1 for s in run["sends"] if s["accepted"]), path))
-        return 0
+        path = out / ("run-%s.json" % run["token"])
+        unresolved = sum(s["status"] == "unresolved" for s in run["sends"])
+        print("Seed test: %d inbox(es); %d accepted, %d unresolved. Saved %s. "
+              "Wait about 5 minutes, then: lead-engine placement read"
+              % (len(run["sends"]), sum(s["accepted"] is True for s in run["sends"]), unresolved, path))
+        return 1 if unresolved else 0
     path = Path(args.run) if args.run else placement_mod.latest(out)
     run = json.loads(path.read_text())
     if args.action == "read":
-        run = placement_mod.read(run, seeds)
-        path.write_text(json.dumps(run, indent=2) + "\n")
+        with TickLock(out / "send.lock") as acquired:
+            if not acquired:
+                raise RuntimeError("another seed test is in progress")
+            run = placement_mod.read(json.loads(path.read_text()), seeds)
+            placement_mod.save(run, path.parent)
         missing = sum(1 for s in run["sends"] for v in s["placement"].values() if v == "missing")
         print("Read %d send(s) x %d seed(s); %d not found. Saved %s" % (len(run["sends"]), len(run["seeds"]),
                                                                        missing, path))
@@ -288,6 +307,7 @@ def main(argv: list[str] | None = None) -> int:
 
     d = command("demo", "run the whole pipeline on fictional businesses, no keys or network", cmd_demo)
     d.add_argument("--dir", default="lead-engine-demo", help="where the demo writes its state and exports")
+    d.add_argument("--reset", action="store_true", help="replace output in an existing marked demo directory")
     i = command("init", "write lead-engine.toml, voice.toml and suppressions.csv from the examples", cmd_init)
     i.add_argument("--force", action="store_true")
     command("check", "validate the config and show which credentials are set", cmd_check)

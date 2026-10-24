@@ -16,6 +16,8 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from .html import EMAIL_RE
+from .http import safe_url
 from .outcome import Advance, Drop, SharedOutage, StepError
 from .voice import Voice, check_opener
 
@@ -76,6 +78,16 @@ SCHEMA = {
 }
 
 
+def _redact_addresses(value: Any) -> Any:
+    if isinstance(value, str):
+        return EMAIL_RE.sub("[address removed]", value)
+    if isinstance(value, list):
+        return [_redact_addresses(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_addresses(item) for key, item in value.items()}
+    return value
+
+
 class ClaudeWriter:
     name = "claude"
 
@@ -97,11 +109,11 @@ class ClaudeWriter:
     def prompt(self, lead: dict[str, Any], recent: list[str], feedback: list[str]) -> dict[str, Any]:
         facts = [f for f in lead["data"].get("facts", []) if f["kind"] != "email"]
         v = self.voice
-        return {
+        return _redact_addresses({
             "company": lead["company"],
             "market": lead.get("market", ""),
             "recipient_role": lead["data"]["person"]["role"],
-            "facts": [{"id": f["id"], "kind": f["kind"], "quote": f["quote"], "source_url": f["source_url"]}
+            "facts": [{"id": f["id"], "kind": f["kind"], "quote": f["quote"], "source_url": safe_url(f["source_url"])}
                       for f in facts],
             "voice_rules": {
                 "max_characters": v.max_characters, "max_sentences": v.max_sentences,
@@ -111,7 +123,7 @@ class ClaudeWriter:
             },
             "voice_examples": v.examples,
             "problems_with_your_last_draft": feedback,
-        }
+        })
 
     def draft(self, lead: dict[str, Any], recent: list[str], feedback: list[str] | None = None) -> Draft:
         s = self.settings

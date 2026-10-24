@@ -31,11 +31,21 @@ class HttpError(RuntimeError):
         return self.status == 0 or self.status == 429 or self.status >= 500
 
 
+def safe_url(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc.rsplit("@", 1)[-1], parts.path, "", ""))
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> None:
+        return None
+
+
 def urllib_transport(method: str, url: str, headers: dict[str, str], body: bytes | None,
                      timeout: float) -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=body, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.build_opener(NoRedirect()).open(req, timeout=timeout) as resp:
             return resp.status, resp.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
@@ -49,21 +59,17 @@ class Http:
         self.timeout = timeout
 
     def _do(self, method: str, url: str, body: bytes | None, extra: dict[str, str]) -> Any:
-        where = "%s %s" % (method, url.split("?")[0])
+        where = "%s %s" % (method, safe_url(url))
         try:
             status, raw = self.transport(method, url, {**self.headers, **extra}, body, self.timeout)
         except OSError as e:  # timeouts and connection errors are OSError subclasses
             raise HttpError("%s failed: %s" % (where, type(e).__name__)) from None
         try:
-            data = json.loads(raw or b"{}")
+            data = json.loads(raw)
         except ValueError:
-            data = {}
-        if status >= 400:
-            msg = ""
-            if isinstance(data, dict):
-                err = data.get("error")
-                msg = err.get("message", "") if isinstance(err, dict) else str(data.get("message") or err or "")
-            raise HttpError("%s returned HTTP %d %s" % (where, status, msg[:200]), status)
+            raise HttpError("%s returned HTTP %d with invalid JSON" % (where, status), status) from None
+        if not 200 <= status < 300:
+            raise HttpError("%s returned HTTP %d" % (where, status), status)
         return data
 
     def get(self, url: str, params: dict[str, Any] | None = None) -> Any:

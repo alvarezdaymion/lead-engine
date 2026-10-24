@@ -1,5 +1,6 @@
 """Opener writers: templates from evidenced facts, and the optional model writer with a fake client."""
 
+import copy
 import json
 from types import SimpleNamespace
 
@@ -51,6 +52,21 @@ def test_a_recent_opening_pushes_the_writer_to_another_template():
     assert second != first
 
 
+@pytest.mark.parametrize("kind,sentence", [("specialty", "We specialize in payroll."),
+    ("founded", "Founded in 2012."), ("years", "We have 15 years of experience."),
+    ("award", "Voted Best Bookkeeper in 2025.")])
+def test_default_templates_handle_consecutive_leads_with_the_same_fact(tmp_path, kind, sentence):
+    from helpers import Clock, add_site, html_transport, make_engine
+    pages = {"https://shop-%d.example.com/" % i:
+             "<p>Pat Example, Owner.</p><p>pat@shop-%d.example.com</p><p>%s</p>" % (i, sentence)
+             for i in range(8)}
+    engine = make_engine(tmp_path, Clock(), transport=html_transport(pages))
+    for i in range(8):
+        add_site(engine.store, "shop-%d.example.com" % i, "Sample Shop %d" % i)
+    engine.tick(discover=False, handoff=False)
+    assert engine.store.counts()["ready"] == 8
+
+
 def test_no_usable_fact_is_a_drop_and_no_passing_draft_is_a_retry():
     voice = load_voice(EXAMPLE)
     assert write(lead(FACTS[:2]), TemplateWriter(voice), voice, []).reason == "no_opener_facts"
@@ -96,6 +112,21 @@ def test_model_writer_sends_only_cited_facts_as_strict_json_and_passes():
     sent = json.loads(call["messages"][0]["content"])
     assert {f["id"] for f in sent["facts"]} == {"f1", "f3", "f4"}  # the address is never sent
     assert sent["voice_rules"]["do_not_start_like"] == ["Running a shop is hard."]
+
+
+def test_every_model_prompt_field_redacts_embedded_addresses():
+    data = copy.deepcopy(lead())
+    address = "pat@example.com"
+    data["company"] += " " + address
+    data["market"] = address
+    data["data"]["person"]["role"] = "Owner " + address
+    data["data"]["facts"][0]["quote"] += " Contact " + address
+    data["data"]["facts"][0]["source_url"] += "?contact=" + address
+    voice = Voice(banned_phrases=[address], examples=[address])
+    client = FakeClient([{"opener": "Since 2009 you have been busy.", "fact_ids": ["f3"]}])
+    ClaudeWriter(SETTINGS, voice, client).draft(data, [address], [address])
+    assert address not in json.dumps(client.messages.calls)
+    assert address in data["data"]["facts"][0]["quote"]
 
 
 def test_model_writer_gets_one_repair_round_with_the_problems():

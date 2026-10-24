@@ -70,6 +70,14 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     summary_json TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS handoff_writes (
+    email TEXT PRIMARY KEY,
+    lead_id INTEGER NOT NULL,
+    campaign_id TEXT NOT NULL,
+    payload_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unresolved',
+    at TEXT NOT NULL
+);
 """
 
 Clock = Callable[[], dt.datetime]
@@ -230,6 +238,51 @@ class Store:
     def hand_off(self, lead_id: int, platform_id: str) -> None:
         self.db.execute("UPDATE leads SET stage = 'handed_off', platform_id = ?, lease_until = NULL, updated_at = ?"
                         " WHERE id = ? AND stage = 'ready'", (platform_id, self.now(), lead_id))
+
+    def handoff_recorded(self, email: str) -> bool:
+        return self.db.execute("SELECT 1 FROM handoff_writes WHERE email = ?", (email.lower(),)).fetchone() is not None
+
+    def handoff_candidates(self, limit: int) -> list[dict[str, Any]]:
+        rows = self.db.execute("SELECT * FROM leads WHERE stage = 'ready' AND NOT EXISTS"
+                               " (SELECT 1 FROM handoff_writes WHERE handoff_writes.email = lower(leads.email))"
+                               " ORDER BY updated_at, id LIMIT ?", (limit,))
+        return [self._lead(row) for row in rows]
+
+    def unresolved_handoffs(self) -> int:
+        return int(self.db.execute("SELECT COUNT(*) FROM handoff_writes WHERE status = 'unresolved'").fetchone()[0])
+
+    def begin_handoff(self, batch: list[dict[str, Any]], campaign_id: str, payloads: list[dict[str, Any]]) -> bool:
+        """Commit intent before the external write. An unresolved intent must never be sent again."""
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            for lead, payload in zip(batch, payloads, strict=True):
+                current = self.get(lead["id"])
+                if current != lead or current["stage"] != "ready" or self.handoff_recorded(lead["email"]):
+                    self.db.execute("ROLLBACK")
+                    return False
+                self.db.execute("INSERT INTO handoff_writes (email, lead_id, campaign_id, payload_json, at)"
+                                " VALUES (?, ?, ?, ?, ?)",
+                                (lead["email"].lower(), lead["id"], campaign_id, json.dumps(payload), self.now()))
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        return True
+
+    def finish_handoff(self, batch: list[dict[str, Any]], created: dict[int, str], counts: dict[str, int]) -> None:
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            for index, lead in enumerate(batch):
+                if index in created:
+                    self.hand_off(lead["id"], created[index])
+                else:
+                    self.drop(lead["id"], "platform_skipped", json.dumps(counts))
+                self.db.execute("UPDATE handoff_writes SET status = 'resolved' WHERE email = ?",
+                                (lead["email"].lower(),))
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
 
     def reopen(self, lead_id: int, stage: str, data: dict[str, Any]) -> None:
         """Put a stranded or retired lead back into the pipeline with a fresh repair budget."""

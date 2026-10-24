@@ -156,10 +156,24 @@ def build(root: Path, transport: SiteTransport | None = None, clock: Clock | Non
     return engine, clock, cfg
 
 
-def run(root: Path) -> int:
+def run(root: Path, *, reset: bool = False) -> int:
+    if Path(root).is_symlink():
+        raise ValueError("demo destination must not be a symlink")
     root = Path(root).resolve()
-    shutil.rmtree(root / "state", ignore_errors=True)
-    shutil.rmtree(root / "out", ignore_errors=True)
+    marker = root / ".lead-engine-demo"
+    signature = "lead-engine synthetic demo v1\n"
+    if root.exists() and any(root.iterdir()):
+        if (not reset or marker.is_symlink() or not marker.is_file() or marker.read_text() != signature):
+            raise ValueError("demo destination is occupied; choose an empty directory, or use --reset on a marked demo")
+        if any((root / name).is_symlink() for name in ("state", "out", "lead-engine.toml")):
+            raise ValueError("demo output paths must not be symlinks")
+        for name in ("state", "out"):
+            if (root / name).exists():
+                shutil.rmtree(root / name)
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+        with marker.open("x") as f:
+            f.write(signature)
     holder: dict[str, Any] = {}
 
     def show(kind: str, payload: dict[str, Any]) -> None:

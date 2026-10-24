@@ -49,7 +49,7 @@ fallbacks = true
 max_tokens = 2000
 
 [gate]
-suppression_file = "suppressions.csv"  # columns: email, domain. Unsubscribes, bounces, do-not-contact.
+suppression_file = "suppressions.csv"  # required valid CSV: email, domain. Reloaded before each live batch.
 
 [handoff]
 mode = "dry-run"             # off | dry-run | live. Dry run writes the request to out/handoff/ and sends nothing.

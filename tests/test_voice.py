@@ -44,6 +44,22 @@ def test_invented_numbers_and_names_are_caught():
     assert check("Ten years as a restaurant controller before 2009 is real experience.") == []  # all in the quote
 
 
+@pytest.mark.parametrize("number", ["20", "200", "9", "20.09"])
+def test_partial_numeric_matches_are_not_evidence(number):
+    assert "the number %s is not in the cited evidence" % number in check("You have %s years in business." % number)
+
+
+def test_numeric_comparisons_normalize_grouping_and_decimal_values():
+    fact = {**FOUNDED, "quote": "We have 1,200 clients and 2.5 years in business."}
+    assert check("You have 1200 clients.", cited=[fact]) == []
+    assert check("You have 2.50 years in business.", cited=[fact]) == []
+    assert check("You have 2 years in business.", cited=[fact])
+
+
+def test_complete_numbers_in_the_company_name_are_allowed():
+    assert check_opener("Shop 42 has been at it since 2009.", voice=VOICE, cited=[FOUNDED], company="Shop 42") == []
+
+
 def test_company_and_market_words_are_allowed_but_an_opener_must_cite_a_fact():
     assert check("A Cedar Hollow firm since 2009 is a long stretch.") == []
     assert check("A Cedar Hollow firm is nice.", cited=()) == ["opener cites no fact"]
