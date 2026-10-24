@@ -24,6 +24,16 @@ ALLOWED_POSTS = ("/api/v2/leads/add", "/api/v2/emails/test")
 MAX_PAGES = 50
 
 
+def leads_add_body(campaign_id: str, leads: list[dict[str, Any]]) -> dict[str, Any]:
+    """The request body for adding leads to a campaign. The dry run writes exactly this."""
+    return {
+        "campaign_id": campaign_id,
+        "leads": leads,
+        "skip_if_in_workspace": True,  # never add someone who is already in any campaign or list
+        "verify_leads_on_import": False,
+    }
+
+
 class InstantlyClient:
     def __init__(self, api_key: str | None = None, transport: Transport | None = None):
         key = api_key or os.environ.get("INSTANTLY_API_KEY", "")
@@ -42,13 +52,7 @@ class InstantlyClient:
             raise ValueError("a campaign id is required")
         if not 1 <= len(leads) <= 1000:
             raise ValueError("add between 1 and 1000 leads per request")
-        body = {
-            "campaign_id": campaign_id,
-            "leads": leads,
-            "skip_if_in_workspace": True,  # never add someone who is already in any campaign or list
-            "verify_leads_on_import": False,
-        }
-        return self._post("/api/v2/leads/add", body)
+        return self._post("/api/v2/leads/add", leads_add_body(campaign_id, leads))
 
     def send_test_email(self, eaccount: str, to: list[str], subject: str, html: str) -> dict[str, Any]:
         body = {"eaccount": eaccount, "to_address_email_list": ",".join(to), "subject": subject,

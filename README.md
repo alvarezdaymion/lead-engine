@@ -30,7 +30,7 @@ The demo runs three scheduled runs on a simulated clock, then a backlog pass and
 2. **Run at 09:31.** The expired lease counts as one failed attempt. Copperfield resumes at `verified` without fetching its site again and becomes ready. Juniper Home Inspection only publishes a shared inbox (`no_direct_email`). Stonegate's owner is on the suppression list (`suppressed`). Brightline and Oakridge fail a second time and back off 60 minutes.
 3. **Run at 10:32.** Brightline's about page loads on the third try and the lead is repaired. Oakridge fails a third time and is retired with `repairs_exhausted` and the last error.
 4. **Backlog.** Three half-researched leads from another tool and the retired one are verified again from fresh reads. Bob Calder is proven as Robert Calder (same person, recovered). Northwind Lawn Care now names a different owner (changed; the lead continues with the new person). Fernhill Plumbing proves nothing (dropped). Oakridge is still down (inconclusive, left as it was).
-5. **Export.** Five campaign-ready leads with their openers and evidence go to `out/ready.csv`, and the hand-off dry run writes the exact Instantly request to `out/handoff/`. Nothing is sent.
+5. **Export.** Five campaign-ready leads with their openers and evidence go to `out/ready.csv`, and the hand-off dry run writes the exact Instantly requests to `out/handoff/`. Nothing is sent.
 
 ## How it runs
 
@@ -104,7 +104,7 @@ A high warmup score does not prove that emails reach the inbox. Two commands che
 ## Safety rules
 
 - **This tool never sends email to prospects.** It adds leads to a campaign, and the platform sends on the campaign's own schedule and settings. The Instantly client has exactly two write paths, adding leads and one test email for the seed test, and refuses any other path before a request is made. It cannot launch, pause or edit a campaign or an account.
-- **Hand-off is a dry run by default.** The dry run writes the exact request body to `out/handoff/` and leaves leads `ready`. Live mode needs `INSTANTLY_API_KEY`, `INSTANTLY_CAMPAIGN_ID` and `[handoff] mode = "live"`. `skip_if_in_workspace` is always set, so nobody already in your workspace is added again.
+- **Hand-off is a dry run by default.** The dry run writes the exact requests live mode would send to `out/handoff/` and leaves leads `ready`. Live mode needs `INSTANTLY_API_KEY`, `INSTANTLY_CAMPAIGN_ID` and `[handoff] mode = "live"`. `skip_if_in_workspace` is always set, so nobody already in your workspace is added again.
 - **Suppressions are checked three times:** domains at discovery, addresses and domains at the gate, and again right before each hand-off batch.
 - **The seed test only sends with `--send`,** and only to the seed mailboxes you list.
 - **Fetching is polite.** robots.txt is obeyed, the user agent names the tool (put your own contact URL in `[fetch] user_agent`), requests to one site are spaced out, and only pages on the business's own site are read.

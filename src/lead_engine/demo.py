@@ -201,7 +201,7 @@ def run(root: Path) -> int:
     print("\nTotals: %d ready, %d dropped, %d retired, %d leads in all." % (
         counts["ready"], counts["dropped"], counts["retired"], sum(counts.values())))
     print("Export: %d lead(s) with every fact's source URL and quote in %s" % (exported, csv_path))
-    print("Hand-off dry run: would add %d lead(s); request body in %s"
+    print("Hand-off dry run: would add %d lead(s); the exact requests are in %s"
           % (hand.get("would_add", 0), hand.get("file", "-")))
     (root / "lead-engine.toml").write_text(
         "# Points `lead-engine status` and `lead-engine export` at the demo's state. Not for real runs.\n"

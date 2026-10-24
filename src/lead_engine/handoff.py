@@ -2,8 +2,8 @@
 
 Modes (`[handoff] mode`):
 - off: nothing happens; ready leads wait.
-- dry-run (default): the exact request body is written to out/handoff/ and nothing is sent. Leads stay
-  `ready`, so switching to live later hands them off.
+- dry-run (default): the exact requests live mode would send are written to out/handoff/ and nothing is
+  sent. Leads stay `ready`, so switching to live later hands them off.
 - live: leads are added to the campaign in batches. Leads the platform creates become `handed_off` with
   its lead id; leads it skips (already in the workspace, blocklisted or invalid) are dropped with reason
   `platform_skipped`. A failed request leaves its leads `ready` for the next run and does not use their
@@ -22,6 +22,7 @@ from typing import Any
 from .fetch import host_of
 from .gate import Suppressions, is_suppressed
 from .http import HttpError
+from .instantly import API, leads_add_body
 from .store import Store
 
 
@@ -54,22 +55,22 @@ def run_handoff(store: Store, settings: dict[str, Any], *, suppressions: Suppres
             continue
         leads.append(lead)
     campaign_id = campaign_id if campaign_id is not None else os.environ.get("INSTANTLY_CAMPAIGN_ID", "")
+    size = max(1, min(1000, int(settings["batch_size"])))
+    batches = [leads[i:i + size] for i in range(0, len(leads), size)]
     if mode == "dry-run":
         if not leads:
             return {"mode": "dry-run", "would_add": 0}
+        target = campaign_id or "<INSTANTLY_CAMPAIGN_ID>"
+        requests = [{"method": "POST", "url": API + "/api/v2/leads/add",
+                     "body": leads_add_body(target, [lead_payload(x) for x in batch])} for batch in batches]
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / ("dry-run-%s.json" % store.now().replace(":", "").replace("+0000", "Z"))
-        body = {"endpoint": "POST https://api.instantly.ai/api/v2/leads/add",
-                "campaign_id": campaign_id or "<INSTANTLY_CAMPAIGN_ID>", "skip_if_in_workspace": True,
-                "verify_leads_on_import": False, "leads": [lead_payload(x) for x in leads]}
-        path.write_text(json.dumps(body, indent=2) + "\n")
-        return {"mode": "dry-run", "would_add": len(leads), "file": str(path), "campaign_id": body["campaign_id"]}
+        path.write_text(json.dumps({"requests": requests}, indent=2) + "\n")
+        return {"mode": "dry-run", "would_add": len(leads), "file": str(path), "campaign_id": target}
     if not campaign_id:
         return {"mode": "live", "error": "set INSTANTLY_CAMPAIGN_ID", "added": 0}
     added, skipped, errors = 0, 0, []
-    size = max(1, min(1000, int(settings["batch_size"])))
-    for i in range(0, len(leads), size):
-        batch = leads[i:i + size]
+    for batch in batches:
         try:
             resp = client.add_leads(campaign_id, [lead_payload(x) for x in batch])
         except HttpError as e:

@@ -40,16 +40,28 @@ def ready_leads(tmp_path, clock, n=2):
     return engine
 
 
-def test_dry_run_writes_the_exact_request_and_sends_nothing(tmp_path, clock):
+def test_dry_run_writes_exactly_what_live_mode_would_send_and_sends_nothing(tmp_path, clock):
     engine = ready_leads(tmp_path, clock)
-    out = run_handoff(engine.store, SETTINGS, suppressions=Suppressions(), out_dir=tmp_path / "out", client=None,
-                      campaign_id="")
+    settings = {**SETTINGS, "batch_size": 1}
+    out = run_handoff(engine.store, settings, suppressions=Suppressions(), out_dir=tmp_path / "out", client=None,
+                      campaign_id="camp-1")
     assert out["mode"] == "dry-run" and out["would_add"] == 2
-    body = json.loads(open(out["file"]).read())
-    assert body["campaign_id"] == "<INSTANTLY_CAMPAIGN_ID>" and body["skip_if_in_workspace"] is True
-    lead = body["leads"][0]
-    assert lead["email"] == "dana.whitlock@example.com" and lead["personalization"]
+    requests = json.loads(open(out["file"]).read())["requests"]
+    assert [r["url"] for r in requests] == ["https://api.instantly.ai/api/v2/leads/add"] * 2  # one per batch
+    assert requests[0]["body"]["leads"][0]["email"] == "dana.whitlock@example.com"
     assert engine.store.counts()["ready"] == 2  # still ready: going live later hands them off
+
+    api = FakeApi({("POST", "/api/v2/leads/add"): {"created_leads": [{"index": 0, "id": "lead-a1"}]}})
+    run_handoff(engine.store, {**settings, "mode": "live"}, suppressions=Suppressions(), out_dir=tmp_path / "out",
+                client=InstantlyClient(KEY, transport=api), campaign_id="camp-1")
+    assert [body for _, _, body in api.calls] == [r["body"] for r in requests]
+
+
+def test_dry_run_without_a_campaign_uses_a_placeholder(tmp_path, clock):
+    engine = ready_leads(tmp_path, clock, n=1)
+    out = run_handoff(engine.store, SETTINGS, suppressions=Suppressions(), out_dir=tmp_path / "out", campaign_id="")
+    body = json.loads(open(out["file"]).read())["requests"][0]["body"]
+    assert body["campaign_id"] == "<INSTANTLY_CAMPAIGN_ID>" and body["skip_if_in_workspace"] is True
 
 
 def test_live_hand_off_marks_created_leads_and_drops_skipped_ones(tmp_path, clock):
