@@ -66,10 +66,10 @@ def test_owner_named_company_facts_remain_eligible_through_gate_replay(tmp_path,
     assert isinstance(out, Advance) and out.stage == "ready"
 
 
-def test_equivalent_company_facts_each_qualify_before_value_deduplication(tmp_path):
+def test_two_company_facts_in_one_element_invalidate_a_repeated_person_name(tmp_path):
     facts = "<p>Pat Example opened in 2012. Pat Example was founded in 2012.</p>"
     _, lead = pipeline(tmp_path, IDENTITY + CONTACT + facts, "Pat Example")
-    assert lead["stage"] == "ready"
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
 @pytest.mark.parametrize("company,heading,stage", [

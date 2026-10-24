@@ -2,15 +2,19 @@
 
 import copy
 import datetime as dt
+from html import escape
 
 import pytest
 
-from lead_engine.evidence import Page, sentences, supported
+from lead_engine.evidence import Page, supported
+from lead_engine.html import parse_html
 from lead_engine.verify import find_people, opener_facts
 
 
 def source(text):
-    return Page("https://shop.example.com/", "https://shop.example.com/", 200, True, text=text)
+    url = "https://shop.example.com/"
+    parsed = parse_html("<p>" + escape(text).replace("\n", "</p><p>") + "</p>", url)
+    return Page(url, url, 200, True, text=parsed.text, elements=parsed.elements, rejected=parsed.rejected)
 
 
 @pytest.mark.parametrize("kind,value", [("founded", {"year": "1998"}), ("years", {"years": "15"}),
@@ -75,5 +79,7 @@ def test_an_excerpt_cannot_remove_a_third_party_subject_from_the_snapshot():
     ("Harbor Ledger co. was founded in 2012.", "we specialize in payroll."),
     ("Pat A. Example, Owner.", "owner: Lee Sample."),
 ])
-def test_sentence_boundaries_ignore_case_and_preserve_abbreviations(first, second):
-    assert sentences(first + " " + second) == [first, second]
+def test_multiple_templates_in_one_element_are_never_split(first, second):
+    page = source(first + " " + second)
+    assert not opener_facts([page], company="Harbor Ledger Co.")
+    assert not find_people([page], ["owner"], "Shop")

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
-from .evidence import EVIDENCE_VERSION, Page, normalize, schema_people, schema_quote, sentences, supported
+from .evidence import EVIDENCE_VERSION, Page, normalize, schema_people, schema_quote, supported
 from .fetch import Disallowed, Fetcher, FetchError, OffsiteRedirect, host_of
 from .http import safe_url
 from .names import name_key, split_name
@@ -61,13 +61,11 @@ def surface(text: str) -> str:
 
 
 def _assertion_scopes(page: Page) -> list[tuple[str, bool]]:
-    scopes = [(text, False) for text in page.elements] + [(text, True) for text in page.headings]
-    return scopes or [(page.text, False)]
+    return [(text, False) for text in page.elements] + [(text, True) for text in page.headings]
 
 
 def assertions(page: Page) -> list[str]:
-    return list(dict.fromkeys(sentence for scope, _ in _assertion_scopes(page)
-                              for sentence in sentences(surface(scope))))
+    return list(dict.fromkeys(surface(scope) for scope, _ in _assertion_scopes(page)))
 
 
 def _heading_allowed(heading: str, company: str, names: set[str] | None = None) -> bool:
@@ -77,10 +75,25 @@ def _heading_allowed(heading: str, company: str, names: set[str] | None = None) 
 
 def _scope_allowed(page: Page, scope: str, company: str, names: set[str] | None = None) -> bool:
     text = normalize(scope)
-    if any(text in normalize(quote) or normalize(quote) in text for quote in page.quotations if normalize(quote)):
-        return False
     return all(isinstance(headings, list) and all(_heading_allowed(heading, company, names) for heading in headings)
-               for content, headings in page.sections if text in normalize(content))
+               for content, headings in page.sections if text == normalize(content))
+
+
+def _mentions_person(text: str, names: set[str]) -> bool:
+    text = surface(text)
+    for prefix in ("Meet ", "Email "):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    word = r"(?:[A-Z][a-z]+|[A-Z]{2,})"
+    captured = list(re.finditer(rf"\b{word}(?: {word})+\b", text))
+    for name in names:
+        for match in re.finditer(r"\b%s\b" % re.escape(name), text, re.I):
+            if not any(len(run.group().split()) <= 3 and run.start() <= match.start() and match.end() <= run.end()
+                       and run.span() != match.span()
+                       for run in captured):
+                return True
+    return False
 
 
 def _identity(text: str, roles: list[str], company: str) -> tuple[str, str] | None:
@@ -103,7 +116,7 @@ def _identity(text: str, roles: list[str], company: str) -> tuple[str, str] | No
 def _contact(address: str, context: str, method: str, names: set[str]) -> str | None:
     for name in sorted(names):
         if method == "mailto":
-            if surface(context) in (name, "Email " + name):
+            if surface(context).removesuffix(".") in (name, "Email " + name):
                 return name
         elif method == "text":
             form = rf"(?:{re.escape(name)}: |Email {re.escape(name)}: |{re.escape(name)} )"
@@ -160,19 +173,22 @@ def find_people(pages: list[Page], roles: list[str], company: str, *, market: st
         names = _variants(person)
         proven = True
         for page in pages:
+            rejected = page.rejected or ([page.text] if not page.elements and not page.headings else [])
+            if any(_mentions_person(text, names) for text in rejected):
+                proven = False
             for scope, is_heading in _assertion_scopes(page):
                 if (is_heading and _heading_allowed(scope, company, names)
                         and _scope_allowed(page, scope, company, names)):
                     continue
-                for sentence in sentences(surface(scope)):
-                    if not any(re.search(r"\b%s\b" % re.escape(name), sentence, re.I) for name in names):
-                        continue
-                    identity = _identity(sentence, roles, company)
-                    contacts = [(a, c, m) for a, c, m in page.emails if normalize(sentence) == normalize(c)]
-                    business = (_scope_allowed(page, sentence, company)
-                                and _opener_match(sentence, opener_forms, today) is not None)
-                    if not (identity and identity[0] in names) and not business and not any(
-                            _contact(a, c, m, names) for a, c, m in contacts):
+                text = surface(scope)
+                identity = _identity(text, roles, company)
+                if identity and _scope_allowed(page, text, company, {identity[0]}):
+                    continue
+                contacts = [(a, c, m) for a, c, m in page.emails if surface(c) == text]
+                business = (_scope_allowed(page, text, company)
+                            and _opener_match(text, opener_forms, today) is not None)
+                if not business and not any(_contact(a, c, m, names) for a, c, m in contacts):
+                    if _mentions_person(text, names):
                         proven = False
         if proven:
             person.facts.sort(key=lambda fact: fact["method"] != "text")
@@ -223,14 +239,14 @@ def _opener_forms(company: str, market: str) -> list[tuple[str, str]]:
     year = r"(?P<year>(?:19|20)\d{2})"
     specialty = "(?P<specialty>" + "|".join(re.escape(s) for s in SPECIALTIES) + ")"
     award = "(?P<award>" + "|".join(re.escape(s) for s in AWARDS) + ")"
-    forms = [("founded", rf"{subject} was founded in {year}\."),
-             ("founded", rf"{subject} opened in {year}\."),
-             ("specialty", rf"{subject} specializes in {specialty}\."),
-             ("specialty", rf"We specialize in {specialty}\."),
-             ("award", rf"{subject} won {award} in {year}\.")]
+    forms = [("founded", rf"{subject} was founded in {year}\.?"),
+             ("founded", rf"{subject} opened in {year}\.?"),
+             ("specialty", rf"{subject} specializes in {specialty}\.?"),
+             ("specialty", rf"We specialize in {specialty}\.?"),
+             ("award", rf"{subject} won {award} in {year}\.?")]
     place = surface(market.split(",")[0])
     if place:
-        forms.append(("serving", rf"{subject} has served (?P<place>{re.escape(place)}) since {year}\."))
+        forms.append(("serving", rf"{subject} has served (?P<place>{re.escape(place)}) since {year}\.?"))
     return forms
 
 
@@ -285,7 +301,7 @@ def candidate_urls(home: Page, host: str, limit: int) -> list[str]:
 def _fit_drop(pages: list[Page], require_any: list[str], exclude_any: list[str]) -> Drop | None:
     for term in exclude_any:
         for page in pages:
-            for sentence in sentences(page.text):
+            for sentence in page.lines:
                 if term.lower() in sentence.lower():
                     return Drop("excluded_term", '"%s" on %s: "%s"' % (term, page.final_url, sentence[:200]))
     if require_any and not any(t.lower() in page.text.lower() for t in require_any for page in pages):

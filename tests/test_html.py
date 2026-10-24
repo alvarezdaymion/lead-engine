@@ -72,18 +72,18 @@ def test_direct_parent_text_keeps_boundaries_headings_and_quotations():
     parsed = parse_html("<body>Intro.<section><h2>Our team</h2>Pat <b>Example</b>, Owner."
                         "<p>Lee Sample, CEO.</p>Pat Example retired.</section>"
                         "<blockquote>Pat Example, Owner.<p>Quoted biography.</p></blockquote></body>", BASE)
-    assert parsed.elements == ["Intro.", "Pat Example, Owner.", "Lee Sample, CEO.",
-                               "Pat Example retired.", "Quoted biography."]
+    assert parsed.elements == ["Lee Sample, CEO."]
+    assert parsed.rejected == ["Intro.", "Pat Example, Owner.", "Pat Example retired.",
+                               "Pat Example, Owner.", "Quoted biography."]
     assert parsed.headings == ["Our team"]
-    assert ("Pat Example, Owner.", ["Our team"]) in parsed.sections
-    assert ("Pat Example retired.", ["Our team"]) in parsed.sections
-    assert parsed.quotations == ["Pat Example, Owner. Quoted biography."]
+    assert ("Lee Sample, CEO.", ["Our team"]) in parsed.sections
 
 
 def test_direct_text_never_joins_across_child_blocks():
     parsed = parse_html("<div>Pat Example<p>Lee Sample</p>, Owner.</div>"
                         "<div>Email Pat Example: pat@<p>example.com</p></div>", BASE)
-    assert parsed.elements == ["Pat Example", "Lee Sample", ", Owner.", "Email Pat Example: pat@", "example.com"]
+    assert parsed.elements == ["Lee Sample", "example.com"]
+    assert parsed.rejected == ["Pat Example", ", Owner.", "Email Pat Example: pat@"]
     assert parsed.emails == []
 
 
@@ -97,5 +97,5 @@ def test_repeated_addresses_in_one_element_keep_the_complete_text():
 @pytest.mark.parametrize("tag", ["q", "cite"])
 def test_inline_citations_preserve_the_complete_enclosing_claim(tag):
     parsed = parse_html("<p>Pat Example, Owner <%s>until 2020</%s>.</p>" % (tag, tag), BASE)
-    assert parsed.elements == ["Pat Example, Owner until 2020."]
-    assert parsed.quotations == (["until 2020"] if tag == "q" else [])
+    assert parsed.elements == []
+    assert parsed.rejected == ["Pat Example, Owner until 2020."]

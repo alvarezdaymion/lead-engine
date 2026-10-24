@@ -148,6 +148,8 @@ class Fetcher:
         if "html" not in ctype.lower():
             return Page(url, final_url, resp.status, False, error="not HTML (%s)" % (ctype or "no content type"))
         truncated = len(resp.body) > self.max_bytes
+        if truncated:
+            raise FetchError("%s exceeded the page size limit" % safe_url(url))
         charset = "utf-8"
         if "charset=" in ctype:
             charset = ctype.split("charset=", 1)[1].split(";")[0].strip() or "utf-8"
@@ -159,4 +161,4 @@ class Fetcher:
         return Page(url, final_url, resp.status, True, parsed.title, parsed.text,
                     [(safe_url(link), text) for link, text in parsed.links], parsed.emails,
                     parsed.jsonld, truncated, elements=parsed.elements, sections=parsed.sections,
-                    quotations=parsed.quotations, headings=parsed.headings)
+                    quotations=parsed.quotations, headings=parsed.headings, rejected=parsed.rejected)

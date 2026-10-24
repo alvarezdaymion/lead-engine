@@ -1,6 +1,7 @@
 """Verification: decision-makers, addresses and opener facts proven from the business's own pages."""
 
 import datetime as dt
+from html import escape
 
 import pytest
 from helpers import Clock, add_site, html_transport, make_engine
@@ -19,7 +20,9 @@ TODAY = dt.date(2026, 3, 2)
 
 
 def page(text, url="https://shop.example.com/about", emails=(), jsonld=()):
-    return Page(url, url, 200, True, "", text, [], list(emails), list(jsonld))
+    parsed = parse_html("<p>" + escape(text).replace("\n", "</p><p>") + "</p>", url)
+    return Page(url, url, 200, True, "", parsed.text, [], list(emails), list(jsonld),
+                elements=parsed.elements, rejected=parsed.rejected)
 
 
 def run(host, transport=None, company="Shop", settings=SETTINGS):

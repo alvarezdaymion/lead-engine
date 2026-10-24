@@ -9,7 +9,6 @@ without fetching anything.
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import asdict, dataclass, field, replace
 from html import unescape
 from typing import Any
@@ -25,14 +24,15 @@ def complete(data: dict[str, Any]) -> bool:
             or any(not isinstance(url, str) or not url for url in read)):
         return False
     for page in pages:
-        if (not isinstance(page, dict) or page.get("ok") is not True
+        if (not isinstance(page, dict) or page.get("ok") is not True or page.get("truncated") is not False
                 or type(page.get("status")) is not int or not 200 <= page["status"] < 300
                 or any(not isinstance(page.get(key), str) for key in ("url", "final_url", "text"))
                 or not page["url"] or not page["final_url"]
                 or any(not isinstance(page.get(key), list) for key in
-                       ("elements", "emails", "sections", "quotations", "jsonld", "headings"))):
+                       ("elements", "emails", "sections", "quotations", "jsonld", "headings", "rejected"))):
             return False
-        if (any(not isinstance(value, str) for key in ("elements", "quotations", "headings") for value in page[key])
+        if (any(not isinstance(value, str) for key in ("elements", "quotations", "headings", "rejected")
+                for value in page[key])
                 or any(not isinstance(value, dict) for value in page["jsonld"])
                 or any(not isinstance(value, (list, tuple)) or len(value) != 3
                        or any(not isinstance(part, str) for part in value)
@@ -62,6 +62,7 @@ class Page:
     sections: list[tuple[str, list[str]]] = field(default_factory=list)
     quotations: list[str] = field(default_factory=list)
     headings: list[str] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -134,7 +135,7 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "", mar
     from .verify import DEFAULT_ROLES, OPENER_KINDS, find_email, find_people, opener_facts
 
     page = find_page(pages, str(fact.get("source_url") or ""))
-    if page is None or not page.ok:
+    if page is None or not page.ok or any(p.truncated is not False for p in pages):
         return False
     method = fact.get("method")
     kind = fact.get("kind")
@@ -175,20 +176,3 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "", mar
                    and normalize(candidate["quote"]) == normalize(quote)
                    for candidate in opener_facts([page], company=company, market=market))
     return False
-
-
-_ABBREVIATIONS = ("Co", "Inc", "Ltd", "Mr", "Mrs", "Ms", "Dr", "St", "Jr", "Sr", "No")
-_SENTENCE_END = re.compile(r"(?<=[.!?])" + "".join(r"(?<!\b%s\.)" % a for a in _ABBREVIATIONS)
-                           + r"(?<!\b[A-Z]\.)\s+", re.I)
-
-
-def sentences(text: str) -> list[str]:
-    """Split visible text into lines, then sentences, for pattern matching and quoting. Initials and
-    common abbreviations ("Dana J. Whitlock", "Harbor Ledger Co.") do not end a sentence."""
-    out = []
-    for line in text.split("\n"):
-        for part in _SENTENCE_END.split(line):
-            part = part.strip()
-            if part:
-                out.append(part)
-    return out

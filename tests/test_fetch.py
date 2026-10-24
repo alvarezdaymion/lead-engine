@@ -73,11 +73,11 @@ def test_client_errors_and_non_html_are_unreadable_pages():
     assert not page.ok and page.error == "HTTP 404"
 
 
-def test_bodies_past_the_size_cap_are_truncated():
+def test_bodies_past_the_size_cap_are_unreadable():
     big = "<html><body><p>" + "word " * 5000 + "</p><p>tail-marker</p></body></html>"
     f, _ = fetcher(html_transport({SITE + "/": big}), max_bytes=2000)
-    page = f.get(SITE + "/")
-    assert page.ok and page.truncated and "tail-marker" not in page.text
+    with pytest.raises(FetchError, match="page size limit"):
+        f.get(SITE + "/")
 
 
 def test_requests_to_one_host_are_spaced_out():

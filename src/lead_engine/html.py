@@ -11,12 +11,13 @@ from html.parser import HTMLParser
 from urllib.parse import unquote, urljoin
 
 SKIP_TAGS = {"script", "style", "noscript", "svg", "template", "iframe", "head"}
-BLOCK_TAGS = {
-    "p", "div", "section", "article", "header", "footer", "nav", "li", "ul", "ol", "h1", "h2", "h3", "h4",
-    "h5", "h6", "br", "tr", "td", "th", "table", "main", "aside", "blockquote", "figcaption", "form",
-    "label", "button", "dd", "dt", "address",
-}
 HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
+EVIDENCE_TAGS = {"p", "li", "td", "th", "dt", "dd", "address"} | HEADING_TAGS
+INLINE_TAGS = {"a", "strong", "b", "em", "i", "span", "small", "br"}
+CONTAINER_TAGS = {"html", "body", "div", "section", "article", "main", "header", "footer", "nav",
+                  "ul", "ol", "dl", "table", "thead", "tbody", "tfoot", "tr"}
+VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+             "source", "track", "wbr"}
 EMAIL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 FILE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js")  # retina names ("@2x.png")
 
@@ -32,6 +33,7 @@ class Parsed:
     sections: list[tuple[str, list[str]]] = field(default_factory=list)
     quotations: list[str] = field(default_factory=list)
     headings: list[str] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -56,12 +58,13 @@ class _Parser(HTMLParser):
         self.links: list[tuple[str, str]] = []
         self.mailto: list[tuple[str, str, int | None]] = []
         self.blocks: list[tuple[str, int, int | None]] = []
+        self.block_plain: list[bool] = []
         self.text_blocks: list[tuple[int | None, list[str], list[str]]] = []
         self._text_block: list[str] | None = None
+        self._text_owner: int | None = None
+        self._text_headings: list[str] = []
         self._blocks: list[int] = []
         self.headings: dict[int, tuple[str, int | None]] = {}
-        self.quote_ranges: list[tuple[int, int | None]] = []
-        self._quotes: list[int] = []
         self.ld_blocks: list[str] = []
         self._skip = 0
         self._ld: list[str] | None = None
@@ -70,16 +73,24 @@ class _Parser(HTMLParser):
         self._mail: str | None = None
         self._anchor: list[str] = []
 
+    def _owner(self) -> int | None:
+        return next((i for i in reversed(self._blocks) if self.blocks[i][0] in CONTAINER_TAGS | EVIDENCE_TAGS), None)
+
     def _append_text(self, text: str) -> None:
         self.parts.append(text)
-        if self._text_block is None:
+        owner = self._owner()
+        headings = [text for text, _ in self.headings.values()]
+        if self._text_block is None or owner != self._text_owner or headings != self._text_headings:
             self._text_block = []
-            self.text_blocks.append((self._blocks[-1] if self._blocks else None,
-                                     [text for text, _ in self.headings.values()], self._text_block))
+            self._text_owner, self._text_headings = owner, headings
+            self.text_blocks.append((owner, headings, self._text_block))
         self._text_block.append(text)
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         a = {k: v or "" for k, v in attrs}
+        if tag not in INLINE_TAGS:
+            for block in self._blocks:
+                self.block_plain[block] = False
         if tag == "script" and a.get("type", "").lower() == "application/ld+json":
             self._ld = []
             return
@@ -91,17 +102,18 @@ class _Parser(HTMLParser):
         if tag in SKIP_TAGS:
             self._skip += 1
             return
-        if tag == "q":
-            self._quotes.append(len(self.quote_ranges))
-            self.quote_ranges.append((len(self.parts), None))
-        if tag in BLOCK_TAGS:
-            if tag == "br":
-                self._append_text("\n")
-            else:
-                self._text_block = None
-                self.parts.append("\n")
+        if self._skip:
+            return
+        if tag == "br":
+            self._append_text("\n")
+        elif tag not in INLINE_TAGS:
+            self.parts.append("\n")
+            if tag not in VOID_TAGS:
+                plain = tag in EVIDENCE_TAGS and all(self.blocks[i][0] in CONTAINER_TAGS | EVIDENCE_TAGS
+                                                   for i in self._blocks)
                 self._blocks.append(len(self.blocks))
                 self.blocks.append((tag, len(self.parts), None))
+                self.block_plain.append(plain)
         if a.get("data-cfemail"):
             decoded = decode_cfemail(a["data-cfemail"])
             if decoded:
@@ -127,14 +139,12 @@ class _Parser(HTMLParser):
         if tag in SKIP_TAGS:
             self._skip = max(0, self._skip - 1)
             return
-        if tag == "q" and self._quotes:
-            index = self._quotes.pop()
-            start, _ = self.quote_ranges[index]
-            self.quote_ranges[index] = (start, len(self.parts))
+        if self._skip:
+            return
         if tag == "a":
             text = " ".join("".join(self._anchor).split())[:120]
             if self._mail:
-                self.mailto.append((self._mail, text, self._blocks[-1] if self._blocks else None))
+                self.mailto.append((self._mail, text, self._owner()))
             elif self._href is not None:
                 absolute = urljoin(self.base_url, self._href)
                 if absolute.startswith(("http://", "https://")):
@@ -142,8 +152,7 @@ class _Parser(HTMLParser):
             self._href = self._mail = None
         if tag == "br":
             self._append_text("\n")
-        elif tag in BLOCK_TAGS:
-            self._text_block = None
+        elif tag not in INLINE_TAGS:
             for i in range(len(self._blocks) - 1, -1, -1):
                 if self.blocks[self._blocks[i]][0] == tag:
                     if tag in HEADING_TAGS:
@@ -157,6 +166,8 @@ class _Parser(HTMLParser):
                     for index in self._blocks[i:]:
                         name, start, _ = self.blocks[index]
                         self.blocks[index] = (name, start, len(self.parts))
+                        if index != self._blocks[i]:
+                            self.block_plain[index] = False
                     del self._blocks[i:]
                     break
             self.parts.append("\n")
@@ -206,18 +217,21 @@ def parse_html(body: str, base_url: str) -> Parsed:
     elements = [" ".join("".join(p.parts[start:end]).split()) for _, start, end in p.blocks]
     scopes = [(block, heading, " ".join("".join(parts).split()))
               for block, heading, parts in p.text_blocks if "".join(parts).strip()]
+
+    def eligible(block: int | None) -> bool:
+        return block is not None and p.block_plain[block] and p.blocks[block][2] is not None
+
     emails: list[tuple[str, str, str]] = []
     for address, anchor, block in p.mailto:
         address = address.lower()
         if EMAIL_RE.fullmatch(address) and not address.endswith(FILE_SUFFIXES):
             context = " ".join(elements[block].split()) if block is not None else anchor
-            emails.append((address, context, "mailto"))
+            emails.append((address, context, "mailto" if eligible(block) else "ineligible"))
     for block, _, text in scopes:
         for m in EMAIL_RE.finditer(text):
             address = m.group(0).lower().rstrip(".")
             if not address.endswith(FILE_SUFFIXES):
-                context = elements[block] if block is not None else "".join(p.parts)
-                emails.append((address, " ".join(context.split()), "text"))
+                emails.append((address, text, "text" if eligible(block) else "ineligible"))
     jsonld: list[dict] = []
     for block in p.ld_blocks:
         for text in (block.strip(), unescape(block.strip())):  # some sites HTML-escape their JSON-LD
@@ -227,11 +241,10 @@ def parse_html(body: str, base_url: str) -> Parsed:
             except ValueError:
                 continue
     title = " ".join("".join(p.title_parts).split())
-    quotations = [elements[i] for i, (tag, _, _) in enumerate(p.blocks) if tag == "blockquote"]
-    quotations.extend(" ".join("".join(p.parts[start:end]).split()) for start, end in p.quote_ranges)
     return Parsed(title=title, lines=lines, links=p.links, emails=emails, jsonld=jsonld,
                   elements=list(dict.fromkeys(text for block, _, text in scopes
-                                              if block is None or p.blocks[block][0] not in HEADING_TAGS)),
-                  sections=[(text, heading) for _, heading, text in scopes if heading],
-                  quotations=quotations,
-                  headings=[elements[i] for i, (tag, _, _) in enumerate(p.blocks) if tag in HEADING_TAGS])
+                                              if eligible(block) and p.blocks[block][0] not in HEADING_TAGS)),
+                  sections=[(text, heading) for block, heading, text in scopes if heading and eligible(block)],
+                  headings=[elements[i] for i, (tag, _, _) in enumerate(p.blocks)
+                            if tag in HEADING_TAGS and eligible(i)],
+                  rejected=[text for block, _, text in scopes if not eligible(block)])

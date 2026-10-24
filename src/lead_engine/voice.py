@@ -16,7 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from .evidence import normalize, sentences
+from .evidence import normalize
 
 EXAMPLE = Path(__file__).parent / "templates" / "voice.example.toml"
 GREETING = re.compile(r"^\W*(?:hi|hey|hello|dear|greetings|good (?:morning|afternoon|evening)|yo)\b", re.I)
@@ -31,6 +31,13 @@ NUMBER_WORDS = {
 ALWAYS_OK = {"i", "i'm", "i've", "i'd", "i'll", "ok"}
 NUMBER = re.compile(r"(?<!\w)[+-]?\d+(?:,\d{3})*(?:\.\d+)?(?!\w)")
 NUMERIC_TOKEN = re.compile(r"(?<!\w)[+-]?\w*\d[\w,]*(?:\.\d[\w,]*)*(?!\w)")
+_ABBREVIATIONS = ("Co", "Inc", "Ltd", "Mr", "Mrs", "Ms", "Dr", "St", "Jr", "Sr", "No")
+_SENTENCE_END = re.compile(r"(?<=[.!?])" + "".join(r"(?<!\b%s\.)" % a for a in _ABBREVIATIONS)
+                           + r"(?<!\b[A-Z]\.)\s+", re.I)
+
+
+def sentences(text: str) -> list[str]:
+    return [part.strip() for line in text.split("\n") for part in _SENTENCE_END.split(line) if part.strip()]
 
 
 def _numbers(text: str) -> set[Decimal]:

@@ -79,24 +79,23 @@ def test_inline_quoted_fragments_cannot_supply_an_opener_fact(tmp_path, fact):
     assert (lead["stage"], lead["reason"]) == ("dropped", "no_opener_facts")
 
 
-def test_lowercase_opener_sentences_qualify_together_and_replay(tmp_path):
+def test_multiple_lowercase_opener_sentences_in_one_element_drop(tmp_path):
     fact = "<p>our firm was founded in 2012. we specialize in payroll.</p>"
     _, lead = pipeline(tmp_path, fact=fact)
-    assert lead["stage"] == "ready"
-    assert {f["kind"] for f in lead["data"]["facts"]} >= {"founded", "specialty"}
+    assert (lead["stage"], lead["reason"]) == ("dropped", "no_opener_facts")
 
 
-def test_lowercase_role_sentence_after_independent_text_qualifies(tmp_path):
+def test_role_template_after_extra_text_in_one_element_drops(tmp_path):
     _, lead = pipeline(tmp_path, identity="<p>Our team. owner: Pat Example.</p>")
-    assert lead["stage"] == "ready"
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
 @pytest.mark.parametrize("tag", ["div", "section", "body"])
-def test_parent_direct_text_supplies_complete_identity_and_fact_sentences(tmp_path, tag):
+def test_parent_direct_text_cannot_supply_identity_or_fact_evidence(tmp_path, tag):
     identity = "<%s>Pat <strong>Example</strong>, Owner.<p>Contact details follow.</p></%s>" % (tag, tag)
     fact = "<div>Our firm was <em>founded</em> in 2012.<p>Our story.</p></div>"
     _, lead = pipeline(tmp_path, identity=identity, fact=fact)
-    assert lead["stage"] == "ready"
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
 @pytest.mark.parametrize("extra", [
@@ -116,7 +115,8 @@ def test_gate_rejects_saved_inline_conflicts_and_direct_parent_assertions(tmp_pa
     engine, lead = pipeline(tmp_path, stop=True)
     parsed = parse_html(IDENTITY + CONTACT + FACT + extra, SITE)
     lead["data"]["pages"][0].update(text=parsed.text, elements=parsed.elements, emails=parsed.emails,
-                                    sections=parsed.sections, quotations=parsed.quotations, headings=parsed.headings)
+                                    sections=parsed.sections, quotations=parsed.quotations, headings=parsed.headings,
+                                    rejected=parsed.rejected)
     out = engine.step(lead)
     assert isinstance(out, Drop) and out.reason == "unproven_evidence"
 
@@ -164,9 +164,9 @@ def test_plain_text_page_newlines_are_not_sentence_boundaries(tmp_path, suffix):
 
 @pytest.mark.parametrize("extra", ["Lee Sample recently retired.", "Our previous office was downtown.",
                                   "Our assistant handles bookings."])
-def test_independent_sentences_do_not_modify_a_complete_identity(tmp_path, extra):
+def test_an_extra_sentence_in_the_identity_element_rejects_it(tmp_path, extra):
     _, lead = pipeline(tmp_path, identity="<p>Pat Example, Owner. %s</p>" % extra)
-    assert lead["stage"] == "ready"
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
 @pytest.mark.parametrize("prefix", ["Do not use this address:", "Our supplier's contact:", "Call someone else:"])
