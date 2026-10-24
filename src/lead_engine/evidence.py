@@ -14,7 +14,7 @@ from html import unescape
 from typing import Any
 
 EVIDENCE_VERSION = 3
-TEXT_SCAN_VERSION = 2
+TEXT_SCAN_VERSION = 3
 
 
 def complete(data: dict[str, Any]) -> bool:

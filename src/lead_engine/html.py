@@ -44,15 +44,6 @@ class Parsed:
         return "\n".join(self.lines)
 
 
-def decode_cfemail(encoded: str) -> str:
-    """Decode a Cloudflare-obfuscated address (hex string, first byte is the XOR key)."""
-    try:
-        key = int(encoded[:2], 16)
-        return "".join(chr(int(encoded[i:i + 2], 16) ^ key) for i in range(2, len(encoded), 2))
-    except ValueError:
-        return ""
-
-
 class _Parser(HTMLParser):
     def __init__(self, base_url: str):
         super().__init__(convert_charrefs=True)
@@ -121,17 +112,11 @@ class _Parser(HTMLParser):
                 self._blocks.append(len(self.blocks))
                 self.blocks.append((tag, len(self.parts), None))
                 self.block_plain.append(plain)
-        if a.get("data-cfemail"):
-            decoded = decode_cfemail(a["data-cfemail"])
-            if decoded:
-                self._append_text(" %s " % decoded)
         if tag == "a":
             href = a.get("href", "").strip()
             self._anchor = []
             if href.lower().startswith("mailto:"):
                 self._mail = unquote(href[7:].split("?", 1)[0]).strip()
-            elif "/cdn-cgi/l/email-protection#" in href:
-                self._mail = decode_cfemail(href.rsplit("#", 1)[1])
             else:
                 self._href = href
 

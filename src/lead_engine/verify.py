@@ -158,10 +158,10 @@ def find_people(pages: list[Page], roles: list[str], company: str, *, market: st
             match = _identity(sentence, roles, company)
             if match and _scope_allowed(page, sentence, company, {match[0]}):
                 found.append(_person_fact(*match, page, sentence, "text", company))
-    people: dict[tuple[str, str], Person] = {}
+    people: dict[tuple[str, ...], Person] = {}
     for fact in found:
         value = fact["value"]
-        key = name_key(value["first_name"], value["last_name"])
+        key = name_key(value["full_name"])
         rank = ROLE_RANK.get(normalize(value["role"]), len(ROLE_RANK))
         person = people.setdefault(key, Person(value["full_name"], value["first_name"], value["last_name"],
                                               value["role"], rank))

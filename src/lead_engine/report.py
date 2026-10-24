@@ -92,8 +92,7 @@ def export_csv(store: Store, path: Path, stages: tuple[str, ...] = ("ready",)) -
         identity_facts = [facts[fid] for fid in person["fact_ids"]]
         role = next((fact for fact in identity_facts if fact["kind"] == "decision_maker"
                      and normalize(fact["value"].get("role", "")) == normalize(person["role"])
-                     and name_key(fact["value"].get("first_name", ""), fact["value"].get("last_name", ""))
-                     == name_key(person["first_name"], person["last_name"])), None)
+                     and name_key(fact["value"].get("full_name", "")) == name_key(person["full_name"])), None)
         if role is None:
             raise InputError("no evidence matches the exported person and role")
         email = facts[d["email"]["fact_id"]]

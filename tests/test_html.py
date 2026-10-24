@@ -1,6 +1,6 @@
 import pytest
 
-from lead_engine.html import decode_cfemail, parse_html
+from lead_engine.html import parse_html
 
 BASE = "https://shop.example.com/about"
 
@@ -16,15 +16,15 @@ def test_visible_text_links_and_title():
     assert "hidden" not in p.text
 
 
-def test_addresses_from_mailto_text_and_cloudflare_obfuscation():
+def test_addresses_come_from_visible_text_and_real_mailto_links_only():
     encoded = "42" + "".join("%02x" % (ord(c) ^ 0x42) for c in "pat@example.com")
-    assert decode_cfemail(encoded) == "pat@example.com"
     p = parse_html('<p><a href="mailto:Dana.Whitlock@Example.com?subject=hi">Email Dana</a></p>'
                    "<p>Billing: billing@example.com.</p>"
                    '<p><span class="__cf_email__" data-cfemail="%s">[protected]</span></p>' % encoded, BASE)
     assert ("dana.whitlock@example.com", "Email Dana", "mailto") in p.emails
     assert ("billing@example.com", "Billing: billing@example.com.", "text") in p.emails
-    assert any(e[0] == "pat@example.com" for e in p.emails)
+    assert not any(e[0] == "pat@example.com" for e in p.emails)
+    assert "[protected]" in p.text and "pat@example.com" not in p.text
 
 
 def test_json_ld_is_parsed_and_graphs_are_flattened():

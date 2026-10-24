@@ -23,8 +23,8 @@ from .evidence import Page, complete, supported
 from .fetch import host_of
 from .html import EMAIL_RE
 from .names import name_key
-from .outcome import Advance, Drop, StepError
-from .verify import find_email, find_people
+from .outcome import Advance, Drop
+from .verify import DEFAULT_ROLES, find_email, find_people
 from .voice import Voice, check_opener
 
 
@@ -74,7 +74,8 @@ def is_suppressed(email: str, site_host: str, s: Suppressions) -> bool:
     return email in s.emails or any(h == d or h.endswith("." + d) for h in hosts if h for d in s.domains)
 
 
-def evidence_problem(lead: dict[str, Any], roles: list[str] | None = None) -> Drop | None:
+def evidence_problem(lead: dict[str, Any], roles: list[str] | None = None, *, today: dt.date | None = None
+                     ) -> Drop | None:
     data = lead["data"]
     if not complete(data):
         return Drop("incomplete_evidence", "all fetched snapshots are required for eligibility and contact checks")
@@ -82,9 +83,35 @@ def evidence_problem(lead: dict[str, Any], roles: list[str] | None = None) -> Dr
         pages = [Page.from_dict(p) for p in data["pages"]]
         facts = {f["id"]: f for f in data.get("facts", [])}
         needed = data["person"]["fact_ids"] + [data["email"]["fact_id"]] + data["opener"]["fact_ids"]
-        if needed and all(fid in facts and supported(facts[fid], pages, company=lead["company"],
-                                                     market=lead.get("market", ""), roles=roles) for fid in needed):
-            return None
+        if not needed or not all(fid in facts and supported(
+                facts[fid], pages, company=lead["company"], market=lead.get("market", ""), roles=roles)
+                for fid in needed):
+            return Drop("unproven_evidence", "stored facts no longer match their complete snapshots")
+        person_data = data["person"]
+        person_facts = [facts[fid] for fid in person_data["fact_ids"]]
+        key = name_key(person_data["full_name"])
+        if (not person_facts or any(f["kind"] != "decision_maker" or name_key(f["value"]["full_name"]) != key
+                                    for f in person_facts)
+                or not any(all(f["value"].get(k) == person_data[k] for k in ("full_name", "first_name", "last_name"))
+                           for f in person_facts)
+                or not any(f["value"].get("role") == person_data["role"] for f in person_facts)):
+            return Drop("unproven_evidence", "person and role do not match the cited decision-maker facts")
+        policy = roles if roles is not None else DEFAULT_ROLES
+        people = find_people(pages, policy, lead["company"], market=lead.get("market", ""), today=today)
+        person = next((p for p in people if name_key(p.full_name) == key and p.role == person_data["role"]), None)
+        if person is None:
+            return Drop("decision_maker_not_found", "the stored pages do not prove a current decision-maker")
+        email = data["email"]["address"]
+        email_fact = facts[data["email"]["fact_id"]]
+        if (email_fact["kind"] != "email" or email_fact["value"].get("email") != email
+                or email_fact["value"].get("full_name") not in {f["value"]["full_name"] for f in person.facts}):
+            return Drop("no_direct_email", "person and email do not match their evidence")
+        email_pages = [replace(p, emails=[item for item in p.emails if item[0] == email]) for p in pages]
+        proven_email, _ = find_email(email_pages, person, host_of(lead["website"]),
+                                    others=[p for p in people if p != person])
+        if proven_email is None:
+            return Drop("no_direct_email", "email is not unambiguously tied to the decision-maker")
+        return None
     except (KeyError, TypeError, ValueError):
         pass
     return Drop("unproven_evidence", "stored facts no longer match their complete snapshots")
@@ -98,36 +125,10 @@ def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, dupl
         return Drop("suppressed", email)
     if duplicate_of is not None:
         return Drop("duplicate_email", "%s is already on lead #%d" % (email, duplicate_of))
-    problem = evidence_problem(lead, roles)
+    problem = evidence_problem(lead, roles, today=now.date())
     if problem:
         return problem
-    pages = [Page.from_dict(p) for p in data["pages"]]
     facts = {f["id"]: f for f in data.get("facts", [])}
-    person_data = data["person"]
-    person_facts = [facts[fid] for fid in person_data["fact_ids"]]
-    key = name_key(person_data["first_name"], person_data["last_name"])
-    if (not person_facts or any(f["kind"] != "decision_maker" or
-            name_key(f["value"].get("first_name", ""), f["value"].get("last_name", "")) != key for f in person_facts)
-            or not any(all(f["value"].get(k) == person_data[k] for k in ("full_name", "first_name", "last_name"))
-                       for f in person_facts)
-            or not any(f["value"].get("role") == person_data["role"] for f in person_facts)):
-        raise StepError("person does not match the cited decision-maker facts")
-    policy = roles if roles is not None else [person_data["role"]]
-    if not policy:
-        raise StepError("decision-maker role policy is empty")
-    people = find_people(pages, policy, lead["company"], market=lead.get("market", ""), today=now.date())
-    person = next((p for p in people if name_key(p.first_name, p.last_name) == key
-                   and p.role == person_data["role"]), None)
-    email_fact = facts[data["email"]["fact_id"]]
-    if person is None:
-        return Drop("decision_maker_not_found", "the stored pages do not prove a current decision-maker")
-    if email_fact["kind"] != "email" or email_fact["value"].get("email") != email:
-        raise StepError("person and email do not match their evidence")
-    email_pages = [replace(p, emails=[item for item in p.emails if item[0] == email]) for p in pages]
-    proven_email, _ = find_email(email_pages, person, host_of(lead["website"]),
-                                 others=[p for p in people if p != person])
-    if proven_email is None:
-        return Drop("no_direct_email", "email is not unambiguously tied to the decision-maker")
     problems = check_opener(data["opener"]["text"], voice=voice, cited=[facts[i] for i in data["opener"]["fact_ids"]],
                             company=lead["company"], market=lead.get("market", ""),
                             first_name=data["person"]["first_name"])

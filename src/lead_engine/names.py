@@ -1,7 +1,7 @@
-"""Person names: split a full name and decide whether two records name the same person.
+"""Full-name identity keys, display fields and legacy backlog name comparisons.
 
-Two records match when the first names agree (common nicknames count: Bob and Robert) and the last names
-share a word, ignoring accents, apostrophes, periods and Jr/Sr/II-IV suffixes.
+Identity keys retain every component and canonicalize only the first name's documented nickname.
+The backlog's older first/last fields use a looser comparison after fresh qualification.
 """
 
 from __future__ import annotations
@@ -51,8 +51,9 @@ def canonical_first(first: str) -> str:
     return NICKNAMES.get(t[0], t[0]) if t else ""
 
 
-def name_key(first: str, last: str) -> tuple[str, str]:
-    return canonical_first(first), " ".join(tokens(last))
+def name_key(full: str) -> tuple[str, ...]:
+    parts = tokens(full)
+    return (canonical_first(parts[0]), *parts[1:]) if parts else ()
 
 
 def same_person(first_a: str, last_a: str, first_b: str, last_b: str) -> bool:
