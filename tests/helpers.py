@@ -1,4 +1,5 @@
-"""Shared test helpers: a fake clock and fake transports. Tests never touch the network."""
+"""Shared test helpers: a fake clock, fake transports and an engine wired to them. Tests never touch the
+network."""
 
 import datetime as dt
 
@@ -48,3 +49,30 @@ def html_transport(pages, statuses=None, timeouts=None, headers=None):
 
     transport.calls = calls
     return transport
+
+
+def make_engine(tmp_path, clock, transport=None, writer=None, suppressions=None, settings=None, discover=None,
+                handoff=None, voice=None):
+    """An engine on the demo's local sites (no faults unless `transport` adds them)."""
+    from lead_engine import config
+    from lead_engine.demo import SiteTransport
+    from lead_engine.engine import Engine
+    from lead_engine.fetch import Fetcher
+    from lead_engine.gate import Suppressions
+    from lead_engine.store import Store
+    from lead_engine.voice import EXAMPLE, load_voice
+    from lead_engine.writer import TemplateWriter
+
+    cfg = config.from_dict(settings or {}, tmp_path)
+    voice = voice or load_voice(EXAMPLE)
+    store = Store(tmp_path / "state" / "leads.db", clock=clock)
+    fetcher = Fetcher("lead-engine-test/0.1", transport=transport or SiteTransport(timeouts={}, down=set()),
+                      sleep=clock.sleep, monotonic=clock.monotonic)
+    return Engine(cfg.data, store, fetcher=fetcher, writer=writer or TemplateWriter(voice), voice=voice,
+                  suppressions=suppressions if suppressions is not None else Suppressions(), clock=clock,
+                  discover=discover, handoff=handoff)
+
+
+def add_site(store, host, company, market="Cedar Hollow, OR", keyword="bookkeeping firm", source="test"):
+    return store.add_lead(domain=host, company=company, website="https://%s/" % host, market=market,
+                          keyword=keyword, source=source)
