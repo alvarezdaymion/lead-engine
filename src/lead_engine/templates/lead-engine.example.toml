@@ -1,0 +1,87 @@
+# Lead engine configuration. Copy to lead-engine.toml (`lead-engine init` does it) and edit.
+# Every value has a default in src/lead_engine/config.py; delete anything you don't need to change.
+# Credentials never go in this file. They come from environment variables (see .env.example).
+
+[discovery]
+source = "places"            # places (Google Places Text Search) | csv
+csv_path = "import.csv"      # used when source = "csv"; columns: company, website, market, keyword
+markets = ["Cedar Hollow, OR", "Port Alder, WA"]
+keywords = ["bookkeeping firm", "home inspection"]
+min_queue = 20               # search for more businesses when fewer leads than this are due
+cells_per_tick = 2           # (market, keyword) searches per run
+pages_per_search = 1         # Places result pages per search, 20 results each, at most 3
+region_code = "US"           # Places region bias, a two-letter country code
+max_locations_per_domain = 2 # more places than this sharing one website in a search = a chain, skipped
+refresh_days = 90            # a searched market and keyword may be searched again after this many days
+exclude_domains = []         # never research these domains
+
+[verify]
+# Roles that count as the decision-maker, strongest first.
+roles = ["owner", "co-owner", "founder", "co-founder", "proprietor", "president", "ceo", "principal",
+         "managing partner", "managing director", "general manager"]
+max_pages = 6                # homepage plus up to 5 about, team and contact pages
+require_any = []             # e.g. ["bookkeeping", "payroll"]: at least one must appear on the site
+exclude_any = ["franchise opportunities", "find a location near you"]
+allow_free_mail = true       # a gmail-style address counts only when printed beside the person's name
+
+[fetch]
+user_agent = "lead-engine/0.1 (+https://github.com/alvarezdaymion/lead-engine)"  # put your own contact URL here
+timeout_seconds = 15
+max_bytes = 1000000          # bodies past this are truncated
+per_host_seconds = 2.0       # minimum gap between requests to one website
+
+[engine]
+max_repairs = 3              # failed attempts at one stage before a lead is retired with the reason
+backoff_minutes = 30         # retry after 30 min, then 60, 120 ... up to max_backoff_minutes
+max_backoff_minutes = 720
+lease_minutes = 20           # a lead leased longer than this was abandoned by a stopped run
+max_minutes = 12             # time budget for one run; schedule runs every 15 minutes
+max_leads_per_tick = 50
+stop_after_errors = 5        # this many failures in a row end the run (a shared problem, not the leads)
+stale_hours = 48             # backlog: research leads untouched this long count as stranded
+
+[writer]
+mode = "template"            # template (no keys) | claude (needs `uv sync --extra llm` and ANTHROPIC_API_KEY)
+voice_file = "voice.toml"
+model = "claude-opus-5-5"
+effort = "low"
+fallbacks = true
+max_tokens = 2000
+
+[gate]
+suppression_file = "suppressions.csv"  # columns: email, domain. Unsubscribes, bounces, do-not-contact.
+
+[handoff]
+mode = "dry-run"             # off | dry-run | live. Dry run writes the request to out/handoff/ and sends nothing.
+max_leads_per_run = 100
+batch_size = 100             # leads per request, at most 1000
+
+[warmup]
+# Ranges for `lead-engine warmup`. Starting points, not platform rules.
+daily_limit = [5, 50]        # campaign emails per inbox per day
+sending_gap = [3, 1440]      # minutes between emails from one inbox
+warmup_limit = [10, 40]      # warmup emails per day
+reply_rate = [20, 60]        # percent
+open_rate = [50, 100]        # percent
+important_rate = [10, 100]   # percent
+spam_save_rate = [10, 100]   # percent
+min_warmup_score = 90
+ramp_days = 14               # warmup ramp-up should stay on for an inbox's first two weeks
+
+[placement]
+subject = "Quick question"   # use your real first-email subject; a run token is appended
+body_file = ""               # a file with your real first-email body (HTML); a short sample is used if empty
+sender_domains = []          # only test inboxes on these domains (empty = every connected inbox)
+
+# Seed mailboxes you own, read over IMAP with an app password. One block per mailbox.
+# [[placement.seeds]]
+# address = "seed-one@example.com"
+# host = "imap.gmail.com"
+# inbox = "INBOX"
+# spam = "[Gmail]/Spam"
+# user_env = "SEED1_IMAP_USER"
+# password_env = "SEED1_IMAP_PASSWORD"
+
+[paths]
+state = "state"              # SQLite state and the run lock
+out = "out"                  # exports, hand-off dry runs, seed-test runs

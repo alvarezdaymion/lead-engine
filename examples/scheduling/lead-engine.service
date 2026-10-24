@@ -1,0 +1,11 @@
+# Linux systemd (user unit). Copy lead-engine.service and lead-engine.timer to ~/.config/systemd/user/,
+# edit the paths, then:
+#   systemctl --user daemon-reload && systemctl --user enable --now lead-engine.timer
+[Unit]
+Description=Lead engine run
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/lead-engine
+EnvironmentFile=/path/to/lead-engine/.env
+ExecStart=/path/to/uv run lead-engine run --quiet

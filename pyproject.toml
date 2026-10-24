@@ -2,6 +2,7 @@
 name = "lead-engine"
 version = "0.1.0"
 description = "Source-verified B2B leads: find owner-run businesses, prove the decision-maker from their own site, write an evidence-backed opener, gate it and hand it to the email platform."
+readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -10,6 +11,9 @@ dependencies = []
 
 [project.optional-dependencies]
 llm = ["anthropic>=1.0"]
+
+[project.scripts]
+lead-engine = "lead_engine.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8", "ruff>=0.6"]

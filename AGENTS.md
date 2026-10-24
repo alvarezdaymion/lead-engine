@@ -1,0 +1,38 @@
+# AGENTS.md
+
+Lead engine finds owner-run businesses, proves the decision-maker from each business's own website, writes an opener from quoted facts, gates the lead, and hands campaign-ready leads to the email platform. Every lead has a state machine with a repair cycle.
+
+If you were asked to set lead-engine up for someone, follow [SETUP.md](SETUP.md). The rules below are for changing the code.
+
+## Layout
+
+- `src/lead_engine/store.py`: SQLite state. Stages, leases, attempts, backoff, retirement, events, runs.
+- `src/lead_engine/engine.py`: one run. `Engine.step` maps a stage to its step; `Engine.work` turns failures into the repair cycle.
+- `src/lead_engine/outcome.py`: what a step returns (`Advance`, `Drop`) or raises (`StepError`, `SharedOutage`).
+- `src/lead_engine/verify.py`, `fetch.py`, `html.py`, `evidence.py`, `names.py`: reading sites and proving facts.
+- `src/lead_engine/voice.py`, `writer.py`: voice rules, the evidence check for openers, the two writers.
+- `src/lead_engine/gate.py`, `handoff.py`, `instantly.py`: the last checks and the only write path to the platform.
+- `src/lead_engine/backlog.py`: stranded-lead re-qualification.
+- `src/lead_engine/sources/`: Google Places, CSV import, discovery filters.
+- `src/lead_engine/placement.py`, `warmup.py`: deliverability checks.
+- `src/lead_engine/config.py`: config schema and defaults; `templates/lead-engine.example.toml` mirrors it.
+- `src/lead_engine/demo.py` and `demo_data/`: the synthetic demo, also used by the tests.
+
+## Rules
+
+- **No fact without evidence.** Every kept fact has `source_url`, `method` and `quote`, and `evidence.supported` must prove it from the stored page snapshot. A new fact kind needs a check in `supported` and a test.
+- **Unprovable is a drop; unreadable is a retry.** Return `Drop(reason, detail)` only when the pages were read and the proof is not there. Raise `StepError` for anything transient, including a page that failed to load when nothing was proven without it.
+- **Never guess.** No address patterns, no enrichment lookups, no surnames taken from addresses or search snippets, no facts that are not on the business's own pages.
+- **Openers restate cited facts only.** `voice.check_opener` must pass before a lead is written and again at the gate. Never weaken the evidence check to get a draft through; change `voice.toml` or the templates instead.
+- **The repair cycle owns failures.** Steps return `Advance` or `Drop`, or raise. Only `Engine.work` turns exceptions into attempts. Checkpoint with `store.advance` before the next step starts, keep steps safe to repeat, and don't swallow an exception inside a step.
+- **`SharedOutage` is for dependencies every lead needs** (the model API, the platform). It releases the lead without using an attempt and stops the run. Don't raise it for one lead's problem.
+- **Never send.** `InstantlyClient._post` allows two paths: `/api/v2/leads/add` and `/api/v2/emails/test`. Don't add writes that launch, pause or edit campaigns or accounts, or that email prospects. The hand-off stays dry run by default and the seed test stays a dry run without `--send`.
+- **Fetch politely.** Keep robots.txt handling, timeouts, the size cap, per-host spacing and the honest user agent. Read only pages on the business's own host.
+- **Secrets** come from environment variables. Errors and logs never include headers, keys or query strings.
+- Runtime code is standard library only; the Anthropic SDK is an optional extra.
+
+## Development
+
+- Python 3.11+, `uv`. Run `uv run pytest` and `uv run ruff check` before a PR.
+- Add a failing test with each behavior change. Network code is tested with a fake transport; tests never call real APIs or fetch real sites.
+- Test data is synthetic: fictional businesses on example.com and example.org, short fake IDs, no real names, addresses or phone numbers.
