@@ -7,7 +7,7 @@ import pytest
 from helpers import add_site, html_transport, make_engine
 
 from lead_engine.gate import Suppressions, gate, is_suppressed, load_suppressions
-from lead_engine.outcome import Advance, Drop, StepError
+from lead_engine.outcome import Advance, Drop
 from lead_engine.voice import EXAMPLE, Voice, load_voice
 
 NOW = dt.datetime(2026, 3, 2, 9, 0, tzinfo=dt.UTC)
@@ -86,7 +86,7 @@ def test_gate_rechecks_the_person_address_relationship(written):
                       quote=context, method="text")
     data["email"]["address"] = "lee.s@example.com"
     out = run_gate(tampered)
-    assert isinstance(out, Drop) and out.reason == "no_direct_email"
+    assert isinstance(out, Drop) and out.reason == "unproven_evidence"
 
 
 def test_gate_person_must_match_the_cited_person_facts(written):
@@ -96,41 +96,43 @@ def test_gate_person_must_match_the_cited_person_facts(written):
         p["text"] += "\nPat Example, Owner."
     email_fact = next(f for f in tampered["data"]["facts"] if f["id"] == tampered["data"]["email"]["fact_id"])
     source = next(p for p in tampered["data"]["pages"] if p["final_url"] == email_fact["source_url"])
-    context = "Email Pat: pat@example.com"
+    context = "Email Pat Example: pat@example.com"
     source["text"] += "\n" + context
     source["emails"] = [("pat@example.com", context, "text")]
     email_fact.update(value={"email": "pat@example.com", "binding": "address matches the name"},
                       quote=context, method="text")
     tampered["data"]["email"]["address"] = "pat@example.com"
-    with pytest.raises(StepError):
-        run_gate(tampered)
+    assert isinstance(run_gate(tampered), Drop)
 
 
 def test_gate_preserves_a_configured_specific_role(tmp_path, clock):
     from helpers import html_transport
     transport = html_transport({"https://shop.example.com/": "<p>Pat Example, Senior Principal.</p>"
-                               "<p>Email Pat: pat@example.com</p><p>Our firm was founded in 2012.</p>"})
+                               "<p>Email Pat Example: pat@example.com</p><p>Our firm was founded in 2012.</p>"})
     engine = make_engine(tmp_path, clock, transport=transport, settings={"verify": {"roles": ["senior principal"]}})
     lead_id = add_site(engine.store, "shop.example.com", "Shop")
     engine.tick(discover=False, handoff=False)
     assert engine.store.get(lead_id)["stage"] == "ready"
 
 
-def test_gate_uses_the_configured_role_even_when_a_stronger_role_is_present(tmp_path, clock):
+def test_unconfigured_role_assertions_do_not_supply_eligible_evidence(tmp_path, clock):
     transport = html_transport({"https://shop.example.com/": "<p>Pat Example, President.</p>"
-                               "<p>Pat Example founded the firm in 2012.</p><p>Email Pat: pat@example.com</p>"})
+                               "<p>Pat Example, Founder.</p><p>Our firm was founded in 2012.</p>"
+                               "<p>Email Pat Example: pat@example.com</p>"})
     engine = make_engine(tmp_path, clock, transport=transport, settings={"verify": {"roles": ["president"]}})
     lead_id = add_site(engine.store, "shop.example.com", "Shop")
     engine.tick(discover=False, handoff=False)
     lead = engine.store.get(lead_id)
-    assert lead["stage"] == "ready" and lead["data"]["person"]["role"] == "President"
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
 def test_gate_accepts_individually_proven_nickname_variants(tmp_path, clock):
     site = "https://shop.example.com/"
     body = ('<script type="application/ld+json">{"@type":"LocalBusiness","name":"Shop",'
-            '"founder":{"@type":"Person","name":"Robert Example"}}</script>'
-            '<p>Bob Example, Owner.</p><p>Email Robert: robert@example.com</p><p>Our firm was founded in 2012.</p>')
+            '"founder":{"@type":"Person","name":"Robert Example","jobTitle":"Owner",'
+            '"worksFor":{"name":"Shop"}}}</script>'
+            '<p>Bob Example, Owner.</p><p>Email Robert Example: robert@example.com</p>'
+            '<p>Our firm was founded in 2012.</p>')
     engine = make_engine(tmp_path, clock, transport=html_transport({site: body}))
     lead_id = add_site(engine.store, "shop.example.com", "Shop")
     engine.tick(discover=False, handoff=False)

@@ -19,6 +19,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .evidence import complete
 from .fetch import host_of
 from .gate import Suppressions, is_suppressed, load_suppressions
 from .http import HttpError, safe_url
@@ -53,6 +54,9 @@ def run_handoff(store: Store, settings: dict[str, Any], *, suppressions: Suppres
         suppressions = load_suppressions(suppression_file)
     leads = []
     for lead in store.handoff_candidates(int(settings["max_leads_per_run"])):
+        if not complete(lead["data"]):
+            store.drop(lead["id"], "incomplete_evidence", "fresh qualification under the current policy is required")
+            continue
         if is_suppressed(lead["email"], host_of(lead["website"]), suppressions):
             store.drop(lead["id"], "suppressed", lead["email"])
             continue
@@ -79,6 +83,10 @@ def run_handoff(store: Store, settings: dict[str, Any], *, suppressions: Suppres
         for original in batch:
             lead = store.get(original["id"])
             if lead["stage"] != "ready" or store.handoff_recorded(lead["email"]):
+                continue
+            if not complete(lead["data"]):
+                store.drop(lead["id"], "incomplete_evidence",
+                           "fresh qualification under the current policy is required")
                 continue
             if is_suppressed(lead["email"], host_of(lead["website"]), current_suppressions):
                 store.drop(lead["id"], "suppressed", lead["email"])

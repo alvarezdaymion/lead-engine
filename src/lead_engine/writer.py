@@ -1,7 +1,7 @@
 """Opener writers. Both return a Draft: the opener plus the ids of the facts it uses.
 
 - TemplateWriter (default, no keys): fills the `[templates]` in voice.toml with a fact's values. Each fact
-  kind (founded, years, specialty, award) has its own templates; the order rotates per lead so consecutive
+  kind (founded, serving, specialty, award) has its own templates; the order rotates per lead so consecutive
   leads don't open the same way.
 - ClaudeWriter (optional `llm` extra): asks a Claude model for one line from the cited facts only, as
   strict JSON, with one repair round when the draft fails the voice rules.
@@ -19,9 +19,8 @@ from typing import Any
 from .html import EMAIL_RE
 from .http import safe_url
 from .outcome import Advance, Drop, SharedOutage, StepError
+from .verify import OPENER_KINDS
 from .voice import Voice, check_opener
-
-OPENER_KINDS = ("award", "founded", "years", "specialty")
 
 
 @dataclass
@@ -182,7 +181,7 @@ def write(lead: dict[str, Any], writer: Any, voice: Voice, recent: list[str]) ->
     tried: list[str] = []
     if isinstance(writer, TemplateWriter):
         if not opener_facts(lead):
-            return Drop("no_opener_facts", "no founding year, years in business, specialty or award on the site")
+            return Drop("no_opener_facts", "no allowed founding, serving, specialty or award assertion on the site")
         drafts = writer.drafts(lead)
         if not drafts:
             kinds = sorted({f["kind"] for f in opener_facts(lead)})

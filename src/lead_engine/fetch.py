@@ -158,4 +158,5 @@ class Fetcher:
         parsed = parse_html(body, resp.url)
         return Page(url, final_url, resp.status, True, parsed.title, parsed.text,
                     [(safe_url(link), text) for link, text in parsed.links], parsed.emails,
-                    parsed.jsonld, truncated, elements=parsed.elements, sections=parsed.sections)
+                    parsed.jsonld, truncated, elements=parsed.elements, sections=parsed.sections,
+                    quotations=parsed.quotations)

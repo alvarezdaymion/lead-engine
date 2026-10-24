@@ -14,7 +14,7 @@ SKIP_TAGS = {"script", "style", "noscript", "svg", "template", "iframe", "head"}
 BLOCK_TAGS = {
     "p", "div", "section", "article", "header", "footer", "nav", "li", "ul", "ol", "h1", "h2", "h3", "h4",
     "h5", "h6", "br", "tr", "td", "th", "table", "main", "aside", "blockquote", "figcaption", "form",
-    "label", "button", "dd", "dt", "address",
+    "label", "button", "dd", "dt", "address", "q", "cite",
 }
 EMAIL_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._%+-]*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}")
 FILE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".css", ".js")  # retina names ("@2x.png")
@@ -29,6 +29,7 @@ class Parsed:
     jsonld: list[dict] = field(default_factory=list)
     elements: list[str] = field(default_factory=list)
     sections: list[tuple[str, str]] = field(default_factory=list)
+    quotations: list[str] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -53,6 +54,8 @@ class _Parser(HTMLParser):
         self.links: list[tuple[str, str]] = []
         self.mailto: list[tuple[str, str, int | None]] = []
         self.blocks: list[tuple[str, int, int | None]] = []
+        self.block_children: list[bool] = []
+        self.text_locations: list[tuple[int, int | None]] = []
         self._blocks: list[int] = []
         self.block_headings: list[str] = []
         self.headings: dict[int, tuple[str, int | None]] = {}
@@ -80,12 +83,16 @@ class _Parser(HTMLParser):
         if tag in BLOCK_TAGS:
             self.parts.append("\n")
             if tag != "br":
+                if self._blocks:
+                    self.block_children[self._blocks[-1]] = True
                 self._blocks.append(len(self.blocks))
                 self.blocks.append((tag, len(self.parts), None))
+                self.block_children.append(False)
                 self.block_headings.append(" / ".join(text for text, _ in self.headings.values()))
         if a.get("data-cfemail"):
             decoded = decode_cfemail(a["data-cfemail"])
             if decoded:
+                self.text_locations.append((len(self.parts), self._blocks[-1] if self._blocks else None))
                 self.parts.append(" %s " % decoded)
         if tag == "a":
             href = a.get("href", "").strip()
@@ -144,6 +151,7 @@ class _Parser(HTMLParser):
             return
         if self._skip:
             return
+        self.text_locations.append((len(self.parts), self._blocks[-1] if self._blocks else None))
         self.parts.append(data)
         if self._href is not None or self._mail is not None:
             self._anchor.append(data)
@@ -178,17 +186,19 @@ def parse_html(body: str, base_url: str) -> Parsed:
         pass
     lines = clean_lines("".join(p.parts))
     elements = ["\n".join(clean_lines("".join(p.parts[start:end]))) for _, start, end in p.blocks]
+    leaves = [i for i, has_children in enumerate(p.block_children) if not has_children and elements[i]]
     emails: list[tuple[str, str, str]] = []
     for address, anchor, block in p.mailto:
         address = address.lower()
         if EMAIL_RE.fullmatch(address) and not address.endswith(FILE_SUFFIXES):
             context = " ".join(elements[block].split()) if block is not None else anchor
             emails.append((address, context, "mailto"))
-    for line in lines:
-        for m in EMAIL_RE.finditer(line):
+    for position, block in p.text_locations:
+        for m in EMAIL_RE.finditer(p.parts[position]):
             address = m.group(0).lower().rstrip(".")
             if not address.endswith(FILE_SUFFIXES):
-                emails.append((address, line, "text"))
+                context = elements[block] if block is not None else "\n".join(lines)
+                emails.append((address, " ".join(context.split()), "text"))
     jsonld: list[dict] = []
     for block in p.ld_blocks:
         for text in (block.strip(), unescape(block.strip())):  # some sites HTML-escape their JSON-LD
@@ -199,6 +209,6 @@ def parse_html(body: str, base_url: str) -> Parsed:
                 continue
     title = " ".join("".join(p.title_parts).split())
     return Parsed(title=title, lines=lines, links=p.links, emails=emails, jsonld=jsonld,
-                  elements=list(dict.fromkeys(e for e in elements if e and len(e) <= 1000)),
-                  sections=[(e, heading) for e, heading in zip(elements, p.block_headings, strict=True)
-                            if e and heading])
+                  elements=list(dict.fromkeys(elements[i] for i in leaves)),
+                  sections=[(elements[i], p.block_headings[i]) for i in leaves if p.block_headings[i]],
+                  quotations=[elements[i] for i, (tag, _, _) in enumerate(p.blocks) if tag in {"blockquote", "q"}])

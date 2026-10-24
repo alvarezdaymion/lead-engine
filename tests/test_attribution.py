@@ -70,9 +70,9 @@ def test_personal_departure_overrides_a_schema_role(tmp_path, status):
 
 @pytest.mark.parametrize("description", ["Pat Example has an assistant who handles bookings.",
                                          "Pat Example employs an assistant for bookings."])
-def test_employing_an_assistant_does_not_delegate_the_owners_role(tmp_path, description):
+def test_extra_personal_descriptions_are_outside_the_allowlist(tmp_path, description):
     _, lead = process(tmp_path, OWNER + "<p>%s</p>" % description + CONTACT + PROVEN)
-    assert lead["stage"] == "ready"
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
 def test_gate_reproduces_departure_and_contact_decisions_from_all_pages(tmp_path):
@@ -95,7 +95,7 @@ def test_gate_reproduces_departure_and_contact_decisions_from_all_pages(tmp_path
 def test_each_individually_proven_variant_binds_the_contact(tmp_path, names, contact_name):
     body = "".join("<p>%s Example, Owner.</p>" % name for name in names)
     chosen = names[contact_name]
-    _, lead = process(tmp_path, body + "<p>Email %s: %s@example.com</p>" % (chosen, chosen.lower()) + PROVEN)
+    _, lead = process(tmp_path, body + "<p>Email %s Example: %s@example.com</p>" % (chosen, chosen.lower()) + PROVEN)
     assert lead["stage"] == "ready"
     assert len([f for f in lead["data"]["facts"] if f["kind"] == "decision_maker"]) == 2
 
@@ -128,7 +128,7 @@ def test_bare_address_does_not_prove_a_personal_contact(tmp_path):
                                      "Email Pat Example, or ask Lee at pat@example.com"])
 def test_an_owner_mention_does_not_bind_another_contacts_address(tmp_path, context):
     _, lead = process(tmp_path, OWNER + "<p>%s</p>" % context + PROVEN)
-    assert (lead["stage"], lead["reason"]) == ("dropped", "no_direct_email")
+    assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
 def test_quoted_fragment_cannot_hide_ambiguous_fact_subject():
@@ -181,6 +181,7 @@ def test_legacy_snapshots_without_complete_attribution_metadata_fail_closed(tmp_
 def test_gate_drops_disqualifying_evidence_instead_of_repairing_it(tmp_path):
     engine, lead = process(tmp_path, OWNER + CONTACT + PROVEN, stop_before_gate=True)
     lead["data"]["pages"][0]["text"] += "\nPat Example, who recently retired, no longer works here."
+    lead["data"]["pages"][0]["elements"].append("Pat Example, who recently retired, no longer works here.")
     result = engine.step(lead)
     assert isinstance(result, Drop) and result.reason == "unproven_evidence"
 
@@ -192,4 +193,4 @@ def test_gate_reconciles_a_conflicting_address_occurrence(tmp_path):
     snapshot["text"] += "\n" + context
     snapshot["emails"].append(("pat@example.com", context, "text"))
     result = engine.step(lead)
-    assert isinstance(result, Drop) and result.reason == "no_direct_email"
+    assert isinstance(result, Drop) and result.reason == "unproven_evidence"

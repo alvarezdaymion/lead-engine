@@ -37,51 +37,54 @@ def process_local_site(tmp_path, body):
     return engine, engine.store.get(lead_id)
 
 
-@pytest.mark.parametrize("sentence,name,role", [
-    ("Dana Whitlock, Owner", "Dana Whitlock", "Owner"),
-    ("Meet Dana Whitlock, our founder and lead bookkeeper.", "Dana Whitlock", "Founder"),
-    ("Owner: Dana Whitlock", "Dana Whitlock", "Owner"),
-    ("Dana Whitlock is the owner of the firm.", "Dana Whitlock", "Owner"),
-    ("The firm was founded in 2009 by Dana J. Whitlock.", "Dana J. Whitlock", "Founder"),
-    ("Dana Whitlock started the firm after a decade in restaurants.", "Dana Whitlock", "Founder"),
-    ("Hi, I'm Dana Whitlock, the owner and only inspector.", "Dana Whitlock", "Owner"),
-    ("Our firm is owned and operated by Luis de Vega since the start.", "Luis de Vega", "Owner"),
-    ("Mary O'Neil serves as president.", "Mary O'Neil", "President"),
+@pytest.mark.parametrize("sentence,name,role,accepted", [
+    ("Dana Whitlock, Owner", "Dana Whitlock", "Owner", True),
+    ("Meet Dana Whitlock, our founder and lead bookkeeper.", "Dana Whitlock", "Founder", False),
+    ("Owner: Dana Whitlock", "Dana Whitlock", "Owner", True),
+    ("Dana Whitlock is the owner of the firm.", "Dana Whitlock", "Owner", False),
+    ("The firm was founded in 2009 by Dana J. Whitlock.", "Dana J. Whitlock", "Founder", False),
+    ("Dana Whitlock started the firm after a decade in restaurants.", "Dana Whitlock", "Founder", False),
+    ("Hi, I'm Dana Whitlock, the owner and only inspector.", "Dana Whitlock", "Owner", False),
+    ("Our firm is owned and operated by Luis de Vega since the start.", "Luis de Vega", "Owner", False),
+    ("Mary O'Neil serves as president.", "Mary O'Neil", "President", False),
 ])
-def test_role_sentences_name_the_decision_maker_with_a_verbatim_quote(sentence, name, role):
+def test_role_sentences_name_the_decision_maker_with_a_verbatim_quote(sentence, name, role, accepted):
     p = page("Welcome.\n" + sentence)
     people = find_people([p], SETTINGS["roles"], "Harbor Ledger Co.")
+    if not accepted:
+        assert people == []
+        return
     assert people and people[0].full_name == name and people[0].role == role
     fact = people[0].facts[0]
     assert fact["method"] == "text" and supported(fact, [p])
 
 
-def test_team_cards_pair_the_owner_with_the_name_above_not_below():
+def test_team_cards_do_not_join_separate_name_and_role_elements():
     parsed = parse_html('<div><h3>Marcus Bell</h3><p>Owner</p></div>'
                         '<div><h3>Priya Nandakumar</h3><p>Payroll Specialist</p></div>', SITE)
     p = page(parsed.text)
     p.elements = parsed.elements
     people = find_people([p], SETTINGS["roles"], "Brightline Books")
-    assert [x.full_name for x in people] == ["Marcus Bell"]
-    assert people[0].facts[0]["quote"] == "Marcus Bell Owner"
+    assert people == []
 
 
-def test_a_heading_above_a_name_counts():
+def test_a_heading_above_a_name_is_not_a_complete_role_template():
     parsed = parse_html('<section><h2>Meet the Owner</h2><p>Rosa Delgado</p></section>'
                         '<p>Rosa has inspected homes for years.</p>', SITE)
     p = page(parsed.text)
     p.elements = parsed.elements
-    assert find_people([p], SETTINGS["roles"], "Copperfield")[0].full_name == "Rosa Delgado"
+    assert find_people([p], SETTINGS["roles"], "Copperfield") == []
 
 
-def test_schema_org_founder_and_employee_nodes():
-    ld = [{"@type": "LocalBusiness", "name": "Shop", "founder": {"@type": "Person", "name": "Pat Example"},
-           "employee": [{"@type": "Person", "name": "Lee Sample", "jobTitle": "Office Manager"}]}]
-    p = page("Nothing named here.", jsonld=ld)
+def test_schema_org_requires_explicit_person_title_and_worksfor_even_when_nested():
+    ld = [{"@type": "LocalBusiness", "name": "Shop", "founder": {"@type": "Person", "name": "Lee Sample"},
+           "employee": [{"@type": "Person", "name": "Pat Example", "jobTitle": "Owner",
+                         "worksFor": {"name": "Shop"}}]}]
+    p = page("Team", jsonld=ld)
     people = find_people([p], SETTINGS["roles"], "Shop")
-    assert [x.full_name for x in people] == ["Pat Example"]  # an office manager is not a decision-maker
+    assert [person.full_name for person in people] == ["Pat Example"]
     fact = people[0].facts[0]
-    assert fact["method"] == "schema.org" and fact["quote"].startswith("founder: ") and supported(fact, [p])
+    assert fact["method"] == "schema.org" and fact["quote"].startswith("person: ") and supported(fact, [p])
 
 
 @pytest.mark.parametrize("text", [
@@ -99,7 +102,7 @@ def test_things_that_are_not_proof(text):
 @pytest.mark.parametrize("text", ["Former owner Pat Example has retired.", "Pat Example\nFormer Owner",
     "Pat Example, Owner (retired).", "Pat Example\nOwner\nRetired in 2024.",
     "Late founder Pat Example opened the firm.", "Pat Example, previous president.",
-    "Pat Example\nAssistant to the Owner", "Pat Example, Owner. Retired in 2024."])
+    "Pat Example\nAssistant to the Owner", "Pat Example, Owner. Pat Example retired in 2024."])
 def test_non_current_role_contexts_are_not_proof(text):
     assert find_people([page(text)], SETTINGS["roles"], "Shop") == []
 
@@ -139,13 +142,14 @@ def test_inferred_roles_must_be_enabled(sentence):
 
 
 def test_a_sentence_on_the_site_beats_a_schema_node_alone():
-    ld = [{"@type": "LocalBusiness", "name": "Shop", "founder": {"@type": "Person", "name": "Lee Sample"}}]
+    ld = [{"@type": "LocalBusiness", "name": "Shop", "founder": {"@type": "Person", "name": "Lee Sample",
+                                                              "jobTitle": "Owner", "worksFor": {"name": "Shop"}}}]
     p = page("Owner: Pat Example", jsonld=ld)
     assert [x.full_name for x in find_people([p], SETTINGS["roles"], "Shop")] == ["Pat Example", "Lee Sample"]
 
 
 def test_the_strongest_role_wins_and_others_are_kept_as_also_named():
-    p = page("Jordan Lake is the general manager.\nCasey Moss, Owner")
+    p = page("Jordan Lake is our general manager.\nCasey Moss, Owner")
     people = find_people([p], SETTINGS["roles"], "Shop")
     assert [x.full_name for x in people] == ["Casey Moss", "Jordan Lake"]
 
@@ -157,16 +161,17 @@ def person(first="Dana", last="Whitlock"):
 
 @pytest.mark.parametrize("address,context,ok", [
     ("dana.whitlock@example.com", "Write to dana.whitlock@example.com", False),  # no separate name
-    ("dw@example.com", "Email Dana: dw@example.com", True),                      # printed beside the name
+    ("dw@example.com", "Email Dana Whitlock: dw@example.com", True),                      # printed beside the name
     ("info@example.com", "Email Dana: info@example.com", False),                 # shared inbox
     ("dana@example.org", "Email Dana: dana@example.org", False),                 # another domain
     ("danaw77@example.net", "Questions? danaw77@example.net", False),            # free mail, not beside the name
-    ("danaw77@example.net", "Dana answers at danaw77@example.net", True),        # free mail beside the name
+    ("danaw77@example.net", "Dana Whitlock danaw77@example.net", True),        # free mail beside the name
     ("pat.r@example.com", "Billing: pat.r@example.com", False),                  # not tied to Dana
 ])
 def test_which_addresses_count_as_the_decision_makers(address, context, ok, monkeypatch):
     monkeypatch.setattr(verify, "FREE_MAIL", {"example.net"})  # stands in for gmail-style providers
-    p = page(context, url="https://shop.example.com/contact", emails=[(address, context, "text")])
+    p = page("Dana Whitlock, Owner.\n" + context, url="https://shop.example.com/contact",
+             emails=[(address, context, "text")])
     fact, rejected = find_email([p], person(), "shop.example.com")
     assert (fact is not None) is ok
     if ok:
@@ -180,11 +185,12 @@ def test_an_address_that_belongs_to_another_named_person_is_rejected():
     p = page(ctx, emails=[("priya.n@example.com", ctx, "text")])
     other = person("Priya", "Nandakumar")
     fact, rejected = find_email([p], person(), "shop.example.com", others=[other])
-    assert fact is None and "ambiguous or conflicting" in rejected[0]
+    assert fact is None and "exact full-name" in rejected[0]
 
 
 def test_mailto_addresses_are_cited_by_their_link():
-    p = page("Contact", emails=[("dana.whitlock@example.com", "Email Dana", "mailto")])
+    p = page("Dana Whitlock, Owner.\nEmail Dana Whitlock",
+             emails=[("dana.whitlock@example.com", "Email Dana Whitlock", "mailto")])
     fact, _ = find_email([p], person(), "shop.example.com")
     assert fact["quote"] == "mailto:dana.whitlock@example.com" and supported(fact, [p])
 
@@ -213,14 +219,14 @@ def test_staff_address_is_not_bound_to_the_owner_in_the_same_paragraph():
 ])
 def test_conflicting_staff_contacts_do_not_reach_ready(tmp_path, contact):
     _, lead = process_local_site(tmp_path, contact + "<p>Our firm was founded in 2012.</p>")
-    assert (lead["stage"], lead["reason"]) == ("dropped", "no_direct_email")
+    assert lead["stage"] == "dropped" and lead["reason"] in {"no_direct_email", "decision_maker_not_found"}
 
 
 def test_staff_contacts_in_the_same_element_remain_ambiguous(tmp_path):
     body = ("<p>Pat Example, Owner, pat@example.com; payroll clerk Lee answers at lee.s@example.com.</p>"
             "<p>Our firm was founded in 2012.</p>")
     _, lead = process_local_site(tmp_path, body)
-    assert lead["stage"] == "dropped" and lead["reason"] == "no_direct_email"
+    assert lead["stage"] == "dropped" and lead["reason"] in {"no_direct_email", "decision_maker_not_found"}
 
 
 @pytest.mark.parametrize("retirement", ["Pat Example retired in 2020 and no longer works here.",
@@ -233,13 +239,14 @@ def test_visible_retirement_overrides_schema_founder(tmp_path, retirement):
     assert (lead["stage"], lead["reason"]) == ("dropped", "decision_maker_not_found")
 
 
-@pytest.mark.parametrize("owner", ["<p>Pat Example, Owner.</p>", "<div><p>Pat Example</p><p>Owner</p></div>"])
+@pytest.mark.parametrize("owner,accepted", [("<p>Pat Example, Owner.</p>", True),
+                                           ("<div><p>Pat Example</p><p>Owner</p></div>", False)])
 @pytest.mark.parametrize("adjacent", ["Our assistant handles bookings.", "Our previous office is closed.",
                                      "Lee Sample has retired."])
-def test_unrelated_adjacent_text_does_not_hide_the_current_owner(tmp_path, owner, adjacent):
+def test_unrelated_adjacent_text_does_not_hide_the_current_owner(tmp_path, owner, adjacent, accepted):
     _, lead = process_local_site(tmp_path, owner + "<p>%s</p><p>Email Pat Example: pat@example.com</p>"
                                  "<p>Our firm was founded in 2012.</p>" % adjacent)
-    assert lead["stage"] == "ready" and lead["data"]["person"]["full_name"] == "Pat Example"
+    assert lead["stage"] == ("ready" if accepted else "dropped")
 
 
 @pytest.mark.parametrize("owner", ["<p>Pat Example, Owner.</p><p>Our assistant handles bookings.</p>",
@@ -264,11 +271,11 @@ def test_departure_on_another_page_excludes_only_the_departed_founder():
 def test_third_party_facts_do_not_become_business_openers(tmp_path, claim):
     _, lead = process_local_site(tmp_path, "<p>Pat Example, Owner.</p><p>Email Pat Example: pat@example.com</p>"
                                  "<p>%s</p>" % claim)
-    assert (lead["stage"], lead["reason"]) == ("dropped", "no_opener_facts")
+    assert lead["stage"] == "dropped"
+    assert not opener_facts([page(claim)], company="Shop")
 
 
-@pytest.mark.parametrize("claim", ["Shop was founded in 2012.", "Our firm was founded in 2012.",
-                                  "Pat Example founded Shop in 2012."])
+@pytest.mark.parametrize("claim", ["Shop was founded in 2012.", "Our firm was founded in 2012."])
 def test_business_founding_claims_keep_their_proven_subject(tmp_path, claim):
     _, lead = process_local_site(tmp_path, "<p>Pat Example, Owner.</p><p>Email Pat Example: pat@example.com</p>"
                                  "<p>%s</p>" % claim)
@@ -289,20 +296,19 @@ def test_absent_opener_facts_wait_for_an_unreadable_page(tmp_path, clock):
 
 
 def test_opener_facts_and_their_values():
-    text = ("Dana Whitlock founded Harbor Ledger Co. in 2009 after a decade in restaurants.\n"
-            "Our firm has been in business since 2014.\nWe have 15 years of experience with payroll.\n"
-            "We specialize in bookkeeping for restaurants and cafes, so you get someone who knows the trade.\n"
-            "We were voted Best Bookkeeper in Cedar Hollow 2025.\n"
-            "Since 2020 prices have gone up.\nEstablished in 2031.")
-    facts = opener_facts([page(text)], TODAY, company="Harbor Ledger Co.")
+    text = ("Harbor Ledger Co. was founded in 2009.\n"
+            "Our firm has served Cedar Hollow since 2014.\n"
+            "We specialize in bookkeeping for restaurants and cafes.\n"
+            "Our company won Best Bookkeeper in 2025.\n"
+            "Our firm was founded in 2012 or 2013.\nOur firm opened in 2031.")
+    facts = opener_facts([page(text)], TODAY, company="Harbor Ledger Co.", market="Cedar Hollow, OR")
     values = [(f["kind"], f["value"]) for f in facts]
-    assert ("founded", {"year": "2009"}) in values and ("founded", {"year": "2014"}) in values
-    assert ("years", {"years": "15"}) in values
+    assert ("founded", {"year": "2009"}) in values
+    assert ("serving", {"place": "Cedar Hollow", "year": "2014"}) in values
     assert ("specialty", {"specialty": "bookkeeping for restaurants and cafes"}) in values
-    assert ("award", {"award": "Best Bookkeeper in Cedar Hollow 2025", "verb": "voted"}) in values
-    assert all(v != {"year": "2020"} and v != {"year": "2031"} for _, v in values)  # loose or future years
-    p = page(text)
-    assert all(quote_in(f["quote"], p.text) for f in facts)
+    assert ("award", {"award": "Best Bookkeeper", "year": "2025"}) in values
+    assert len(facts) == 4
+    assert all(quote_in(f["quote"], text) for f in facts)
 
 
 def test_research_keeps_every_fact_with_its_source_and_proof():
@@ -328,7 +334,7 @@ def test_every_demo_lead_that_verifies_is_fully_supported():
 
 def test_late_page_evidence_survives_snapshot_serialization():
     body = "".join("<p>General shop information item %d.</p>" % i for i in range(1400))
-    body += "<p>Pat Example, Owner.</p><p>Email Pat: pat@example.com</p><p>Our firm was founded in 2012.</p>"
+    body += "<p>Pat Example, Owner.</p><p>Email Pat Example: pat@example.com</p><p>Our firm was founded in 2012.</p>"
     out = run("shop.example.com", html_transport({SITE + "/": body}))
     assert isinstance(out, Advance)
     snapshots = [Page.from_dict(p) for p in out.data["pages"]]
@@ -356,7 +362,8 @@ def test_shared_inbox_only_is_dropped_with_the_reason():
 
 SITE = "https://shop.example.com"
 HOME = '<html><body><a href="/about">About</a><p>Bike repair.</p></body></html>'
-ABOUT = ("<html><body><p>Pat Example, Owner. Write to Pat Example at pat@example.com</p>"
+ABOUT = ("<html><body><p>Pat Example, Owner.</p><p>Email Pat Example: pat@example.com</p>"
+         "<p>Our firm was founded in 2012.</p>"
          "<p>Franchise opportunities available.</p></body></html>")
 
 

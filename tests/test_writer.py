@@ -57,8 +57,8 @@ def test_a_recent_opening_pushes_the_writer_to_another_template():
     ("specialty", "We specialize in tax preparation."),
     ("specialty", "We specialize in financial reporting."),
     ("specialty", "We specialize in bookkeeping for restaurants and cafes."),
-    ("founded", "Our firm was founded in 2012."), ("years", "We have 15 years of experience."),
-    ("award", "We were voted Best Bookkeeper in 2025.")])
+    ("founded", "Our firm was founded in 2012."), ("serving", "Our firm has served Cedar Hollow since 2012."),
+    ("award", "We won Best Bookkeeper in 2025.")])
 def test_default_templates_handle_consecutive_leads_with_the_same_fact(tmp_path, kind, sentence):
     from helpers import Clock, add_site, html_transport, make_engine
     pages = {"https://shop-%d.example.com/" % i:

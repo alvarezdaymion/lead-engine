@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-from .evidence import Page, supported
+from .evidence import Page, complete, supported
 from .fetch import host_of
 from .html import EMAIL_RE
 from .names import name_key
@@ -80,14 +80,14 @@ def gate(lead: dict[str, Any], *, suppressions: Suppressions, voice: Voice, dupl
         return Drop("suppressed", email)
     if duplicate_of is not None:
         return Drop("duplicate_email", "%s is already on lead #%d" % (email, duplicate_of))
-    pages = [Page.from_dict(p) for p in data.get("pages", [])]
-    if (data.get("evidence_version") != 2 or not data.get("pages_read")
-            or set(data["pages_read"]) != {p.final_url for p in pages}):
+    if not complete(data):
         return Drop("incomplete_evidence", "all fetched snapshots are required for eligibility and contact checks")
+    pages = [Page.from_dict(p) for p in data["pages"]]
     facts = {f["id"]: f for f in data.get("facts", [])}
     needed = data["person"]["fact_ids"] + [data["email"]["fact_id"]] + data["opener"]["fact_ids"]
     for fid in needed:
-        if fid not in facts or not supported(facts[fid], pages, company=lead["company"]):
+        if fid not in facts or not supported(facts[fid], pages, company=lead["company"],
+                                             market=lead.get("market", ""), roles=roles):
             return Drop("unproven_evidence", "fact %s no longer matches its stored page" % fid)
     person_data = data["person"]
     person_facts = [facts[fid] for fid in person_data["fact_ids"]]

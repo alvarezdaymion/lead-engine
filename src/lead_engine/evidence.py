@@ -10,9 +10,35 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from html import unescape
 from typing import Any
+
+EVIDENCE_VERSION = 3
+
+
+def complete(data: dict[str, Any]) -> bool:
+    pages = data.get("pages")
+    read = data.get("pages_read")
+    if (type(data.get("evidence_version")) is not int or data["evidence_version"] != EVIDENCE_VERSION
+            or not isinstance(pages, list) or not pages or not isinstance(read, list) or not read
+            or any(not isinstance(url, str) or not url for url in read)):
+        return False
+    for page in pages:
+        if (not isinstance(page, dict) or page.get("ok") is not True
+                or type(page.get("status")) is not int or not 200 <= page["status"] < 300
+                or any(not isinstance(page.get(key), str) for key in ("url", "final_url", "text"))
+                or not page["url"] or not page["final_url"]
+                or any(not isinstance(page.get(key), list) for key in
+                       ("elements", "emails", "sections", "quotations", "jsonld"))):
+            return False
+        if (any(not isinstance(value, str) for key in ("elements", "quotations") for value in page[key])
+                or any(not isinstance(value, dict) for value in page["jsonld"])
+                or any(not isinstance(value, (list, tuple)) or len(value) != size
+                       or any(not isinstance(part, str) for part in value)
+                       for key, size in (("emails", 3), ("sections", 2)) for value in page[key])):
+            return False
+    return set(read) == {p["final_url"] for p in pages}
 
 
 @dataclass
@@ -30,6 +56,7 @@ class Page:
     error: str = ""
     elements: list[str] = field(default_factory=list)
     sections: list[tuple[str, str]] = field(default_factory=list)
+    quotations: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -67,41 +94,38 @@ def find_page(pages: list[Page], url: str) -> Page | None:
     return None
 
 
-def schema_node_matches(node: dict, name: str, role: str = "") -> bool:
-    if normalize(str(node.get("name") or "")) != normalize(name):
-        return False
-    return not role or normalize(str(node.get("jobTitle") or "")) == normalize(role)
-
-
 def schema_people(jsonld: list[dict], company: str = "") -> list[tuple[str, dict]]:
-    """People of the named prospect organization, or Person nodes with an explicit worksFor affiliation."""
-    out: list[tuple[str, dict]] = []
-    for node in jsonld:
-        for prop in ("founder", "founders", "employee", "employees", "member", "members", "owner"):
-            if not company or normalize(str(node.get("name") or "")) != normalize(company):
-                continue
-            value = node.get(prop)
-            for person in value if isinstance(value, list) else [value]:
-                if isinstance(person, dict) and person.get("name"):
-                    out.append((prop.rstrip("s"), person))
-        types = node.get("@type")
-        types = types if isinstance(types, list) else [types]
-        affiliation = node.get("worksFor")
-        if ("Person" in types and node.get("name") and company and isinstance(affiliation, dict)
-                and normalize(str(affiliation.get("name") or "")) == normalize(company)):
-            out.append(("person", node))
+    """Only explicit Person nodes with a direct worksFor affiliation name the prospect's people."""
+    out = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+        elif isinstance(value, dict):
+            affiliation = value.get("worksFor")
+            if (set(value) == {"@type", "name", "jobTitle", "worksFor"} and value["@type"] == "Person"
+                    and isinstance(affiliation, dict) and set(affiliation) == {"name"}
+                    and isinstance(affiliation["name"], str) and company
+                    and normalize(affiliation["name"]) == normalize(company)):
+                out.append(("person", value))
+            for item in value.values():
+                visit(item)
+
+    visit(jsonld)
     return out
 
 
 def schema_quote(prop: str, person: dict) -> str:
-    keep = {k: person[k] for k in ("@type", "name", "jobTitle") if k in person}
+    keep = {k: person[k] for k in ("@type", "name", "jobTitle", "worksFor") if k in person}
     return "%s: %s" % (prop, json.dumps(keep, sort_keys=True))
 
 
-def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "") -> bool:
+def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "", market: str = "",
+              roles: list[str] | None = None) -> bool:
     """Whether a fact is still proven by the stored page it cites."""
     from .html import EMAIL_RE
-    from .verify import find_people, opener_facts
+    from .verify import DEFAULT_ROLES, OPENER_KINDS, find_email, find_people, opener_facts
 
     page = find_page(pages, str(fact.get("source_url") or ""))
     if page is None or not page.ok:
@@ -126,20 +150,23 @@ def supported(fact: dict[str, Any], pages: list[Page], *, company: str = "") -> 
             return False
         return any(candidate["value"] == value and candidate["method"] == method
                    and normalize(candidate["quote"]) == normalize(quote)
-                   for person in find_people(pages, [role], company) for candidate in person.facts
+                   for person in find_people(pages, roles if roles is not None else DEFAULT_ROLES + [role], company)
+                   for candidate in person.facts
                    if candidate["source_url"] == page.final_url)
     if kind == "email" and method in ("text", "mailto"):
         address = value.get("email", "")
-        if not EMAIL_RE.fullmatch(address) or value.get("binding") not in (
-                "address matches the name", "printed beside the name"):
+        if not EMAIL_RE.fullmatch(address):
             return False
-        if method == "mailto":
-            return quote == "mailto:" + address and any(e == address and m == "mailto" for e, _, m in page.emails)
-        return address in {m.group(0).lower() for m in EMAIL_RE.finditer(quote)}
-    if kind in ("founded", "years", "specialty", "award") and method == "text":
+        filtered = [replace(p, emails=[e for e in p.emails if e[0] == address]) for p in pages]
+        for person in find_people(pages, roles if roles is not None else DEFAULT_ROLES, company):
+            candidate, _ = find_email(filtered, person, page.final_url.split("/")[2])
+            if candidate and all(candidate[key] == fact.get(key) for key in ("value", "quote", "method", "source_url")):
+                return True
+        return False
+    if kind in OPENER_KINDS and method == "text":
         return any(candidate["kind"] == kind and candidate["value"] == value
                    and normalize(candidate["quote"]) == normalize(quote)
-                   for candidate in opener_facts([page], company=company or subject))
+                   for candidate in opener_facts([page], company=company, market=market))
     return False
 
 

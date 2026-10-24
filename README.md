@@ -69,10 +69,52 @@ a failed step: same stage, attempt + 1, retry after backoff --> retired (reason)
 
 ## Evidence rules
 
-- **Decision-maker.** A named person with an owner-level role from `[verify] roles` (owner, founder, president, principal and similar) in a sentence on the site, on a team card ("Dana Whitlock" above "Owner"), or in a schema.org founder or employee node explicitly affiliated with the prospect. A Person node needs `worksFor` naming the prospect; an organization node must name it too. A team card must keep the name and role inside one enclosing HTML element, rather than joining unrelated neighboring elements. One complete sentence or one HTML element must establish the person and their current role unambiguously. A first name alone, a heading, someone else's role ("the founder's daughter"), a client or testimonial role, a former or delegated role or an explicitly negated assertion is not proof. Visible, person-specific retirement or departure evidence overrides a schema role, including ordinary modifiers, relative clauses and statements on another page. Having or employing an assistant does not make the owner an assistant. Unrelated descriptions of staff, another person or a previous office do not disqualify a current owner. The strongest allowed role wins, and a sentence on the site beats a schema.org node alone. The gate uses the same configured roles and canonical name matching as verification; each merged name variant must have its own evidence.
-- **Address.** Published on the site, on the business's own domain, not a shared inbox (info@, hello@, office@ and similar), and printed unambiguously with their name in one contact sentence or HTML element. Matching an address local part to a name alone is insufficient. Each individually proven name variant may supply that binding; an unproven nickname cannot. Mailto links retain the surrounding contact element, and every repeated occurrence is checked across all fetched pages. Any ambiguous occurrence or conflicting person, business or staff context rejects the address, even when another occurrence looks valid. A gmail-style address counts only when the person's name is printed separately from the address. The gate checks the association again. The engine never guesses addresses or buys them from enrichment services.
-- **Opener facts.** Founding year, years in business, specialty and awards, each with the sentence it came from and the target business as its subject. Subjectless fragments such as "Founded in 2012" and ambiguous claims about suppliers, clients or another business are rejected. A complete assertion such as "Our firm was founded in 2012" qualifies when its sentence and section context contain no conflicting attribution. The gate checks the full stored page so an excerpt cannot hide a different subject.
-- **Every kept fact** stores its source URL, its method (`text`, `schema.org` or `mailto`) and its quote, plus every fetched page snapshot, including exclusion and competing-contact evidence, element boundaries and section headings, bounded by the fetch size cap. Verification checks the serialized snapshot before checkpointing, and the gate proves the fact's values and relationships again without fetching anything. Unknown kinds and methods fail. Missing snapshots or legacy snapshots without current attribution metadata are dropped with `incomplete_evidence`; use fresh backlog qualification for stranded leads. Unprovable facts and ambiguous contacts are dropped with a reason instead of consuming repair attempts. `lead-engine export` writes the facts to CSV.
+Extraction uses a fixed allowlist, and the gate replays the same functions on all stored snapshots. There is no role inference or partial-phrase extraction. Text outside these forms cannot supply evidence.
+
+Whitespace is collapsed and en/em dashes are folded to `-`. A name is exactly two or three capitalized ASCII words (`Pat Example`, `Pat Alex Example`); initials, particles and apostrophes are outside this grammar. Role and business comparisons ignore case. A business must match the lead's company exactly after whitespace and case normalization. No extra clause, number, question, alternative or qualifier may be appended. A single final period is optional for identity and text-contact forms.
+
+**Decision-maker text** must be one whole sentence or one innermost block element matching one of these six forms:
+
+| Accepted form | Example |
+|---|---|
+| `<Name>, <Role>` | `Pat Example, Owner` |
+| `<Name> - <Role>` | `Pat Example - Owner` |
+| `<Role>: <Name>` | `Owner: Pat Example` |
+| `<Name> is the <role> of <Business>` | `Pat Example is the owner of Shop` |
+| `<Name> is our <role>` | `Pat Example is our owner` |
+| `Meet <Name>, our <role>` | `Meet Pat Example, our owner` |
+
+`<Role>` must be in `[verify] roles`. Separate name/title cards are not joined. Independent sentences are checked separately: `Pat Example, Owner. Lee Sample retired.` still proves Pat's role. If an unsupported sentence repeats a proven full name, that person's eligibility is unproven, including descriptions of retirement or of having an assistant. Those descriptions are not interpreted or repaired. Each merged nickname variant must have its own complete proof; the strongest configured role wins.
+
+**Schema** accepts only a Person object with exactly `@type`, `name`, `jobTitle` and `worksFor`: `{"@type":"Person","name":"Pat Example","jobTitle":"Owner","worksFor":{"name":"Shop"}}`. `worksFor` contains exactly the prospect's `name`. The same name grammar and configured role list apply. Such a Person may be nested inside an organization, but founder/owner/employee properties alone never imply a role or affiliation.
+
+**Addresses** must match one complete contact element:
+
+- `<Name>: <email>`
+- `Email <Name>: <email>`
+- `<Name> <email>`
+- A mailto link whose complete enclosing element text is exactly `<Name>` or `Email <Name>`, without a final period.
+
+The full name must be an individually proven decision-maker spelling. First names and address patterns never bind a contact. The displayed `Email` prefix and names use the spelling shown above. A paragraph or other innermost block is one element; inline formatting and `<br>` remain part of its text. Extra text before or after a line break rejects the contact. Every occurrence of an address is retained and checked; one invalid occurrence rejects that address. The address must also be on the business's domain, or an allowed free-mail domain, and cannot be a shared inbox.
+
+**Opener facts** require one complete sentence, including its final period. Subject and fixed-phrase comparisons ignore case. `<Subject>` is only `We`, `Our firm`, `Our shop`, `Our company`, `Our team` or the prospect's exact company name.
+
+| Accepted form | Stored fact |
+|---|---|
+| `<Subject> was founded in <YYYY>.` | `founded`: year |
+| `<Subject> opened in <YYYY>.` | `founded`: opening year |
+| `<Subject> has served <Place> since <YYYY>.` | `serving`: place and year; never a founding year |
+| `<Subject> specializes in <Specialty>.` | `specialty` |
+| `We specialize in <Specialty>.` | `specialty` |
+| `<Subject> won <Award> in <YYYY>.` | `award`: award and year |
+
+Years are four digits from 1900 through the current year. `<Place>` must equal the city/area portion of the lead's market before its first comma. The specialty slot accepts only: `bookkeeping`, `payroll`, `tax preparation`, `financial reporting`, `bookkeeping for restaurants and cafes`, `older homes and historic districts`, `weekly mowing and spring cleanups`. The award slot accepts only `Best Bookkeeper`, `Best Shop`, `Best Home Inspector`. These finite slots cannot consume other names, ranges, alternatives or hedges. Years-of-experience claims, subjectless fragments and other phrasings do not qualify.
+
+Section headings must be exactly the prospect's name, a proven full person name for identity/contact evidence, or one of: `About`, `About us`, `Our team`, `Meet the team`, `Team`, `Contact`, `Contact us`, `Our story`, `History`, `Leadership`, `Services`. Each enclosing heading must qualify. Quotes inside `blockquote` or `q` never supply evidence.
+
+Every fact keeps its source URL, method and complete quote. Every fetched snapshot is retained, including leaf boundaries, section headings, quotations and repeated contacts. Verification checks serialized snapshots before checkpointing. The gate and both hand-off modes require evidence version 3 and a complete, valid snapshot manifest; legacy ready leads are dropped with `incomplete_evidence` before export or POST. Re-qualify stranded leads with fresh backlog reads. Unsupported identities, contacts and facts drop with a reason instead of consuming repair attempts; unreadable pages retry. `lead-engine export` writes retained facts to CSV.
+
+Existing `voice.toml` files need the `serving` templates and the updated award placeholders (`{award}`, `{year}`) from the example voice file. Years-of-experience facts are no longer extracted.
 
 ## Voice rules
 

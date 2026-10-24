@@ -109,9 +109,9 @@ def test_grade_is_flesch_kincaid():
 
 def test_the_example_voice_file_loads_and_its_templates_pass():
     voice = load_voice(EXAMPLE)
-    values = {"founded": {"year": "2009"}, "years": {"years": "15"},
+    values = {"founded": {"year": "2009"}, "serving": {"place": "Cedar Hollow", "year": "2012"},
               "specialty": {"specialty": "bookkeeping for restaurants and cafes"},
-              "award": {"award": "best bookkeeper in Cedar Hollow 2025", "verb": "voted"}}
+              "award": {"award": "Best Bookkeeper", "year": "2025"}}
     for kind, templates in voice.templates.items():
         fact = {"id": "f1", "kind": kind, "value": values[kind],
                 "quote": "Harbor Ledger Co. %s" % " ".join(str(v) for v in values[kind].values())}
