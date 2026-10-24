@@ -1,0 +1,98 @@
+"""Voice rules, including the evidence rule: no number or name the cited facts don't contain."""
+
+import pytest
+
+from lead_engine.voice import EXAMPLE, Voice, check_opener, grade, load_voice
+
+FOUNDED = {"id": "f3", "kind": "founded", "value": {"year": "2009"},
+           "quote": "Dana Whitlock founded Harbor Ledger Co. in 2009 after ten years as a restaurant controller."}
+VOICE = Voice(max_characters=200, max_sentences=2, max_grade=9.0, banned_phrases=["I came across", "amazing"])
+
+
+def check(text, cited=(FOUNDED,), recent=None, voice=VOICE, first_name="Dana"):
+    return check_opener(text, voice=voice, cited=list(cited), company="Harbor Ledger Co.", market="Cedar Hollow, OR",
+                        first_name=first_name, recent=recent)
+
+
+def test_a_good_opener_passes():
+    assert check("Running Harbor Ledger Co. since 2009 is a long stretch for any small business.") == []
+
+
+@pytest.mark.parametrize("text,problem", [
+    ("", "empty"),
+    ("Running the firm since 2009 is a long stretch. " * 6, "characters"),
+    ("Since 2009 \u2014 that is a long stretch.", "em dash"),
+    ("Hi there, since 2009 is a long stretch.", "greeting"),
+    ("Since {year} is a long stretch.", "placeholder"),
+    ("Since 2009, see https://example.com for more.", "link"),
+    ("I came across your firm, running since 2009.", "banned phrase"),
+    ("Dana, running the firm since 2009 is a long stretch.", "first name"),
+    ("Since 2009. That is long. Really long.", "sentences"),
+    ("Institutional organizational administrative responsibilities accumulate continuously since 2009.",
+     "reading level"),
+])
+def test_each_style_rule(text, problem):
+    problems = check(text)
+    assert any(problem in p for p in problems), problems
+
+
+def test_invented_numbers_and_names_are_caught():
+    problems = check("Running the firm since 2011 is a long stretch.")
+    assert problems == ["the number 2011 is not in the cited evidence"]
+    problems = check("Twelve years running the books in Lakeside is a long stretch.")
+    assert '"twelve" is not in the cited evidence' in problems and '"Lakeside" is not in the cited evidence' in problems
+    assert check("Ten years as a restaurant controller before 2009 is real experience.") == []  # all in the quote
+
+
+def test_company_and_market_words_are_allowed_but_an_opener_must_cite_a_fact():
+    assert check("A Cedar Hollow firm since 2009 is a long stretch.") == []
+    assert check("A Cedar Hollow firm is nice.", cited=()) == ["opener cites no fact"]
+
+
+def test_a_company_name_with_a_period_is_one_sentence():
+    assert check("Harbor Ledger Co. has been at it since 2009, and that kind of staying power is rare.") == []
+
+
+def test_openings_must_differ_from_recent_openers():
+    recent = ["Running Brightline Books since 2014 is a long stretch."]
+    problems = check("Running Harbor Ledger Co. since 2009 is a long stretch.", recent=recent,
+                     voice=Voice(distinct_opening_words=2, distinct_window=5))
+    assert problems == []  # different company names make different openings
+    problems = check("Running a small firm since 2009 is a long stretch.", recent=["Running a small shop is hard."],
+                     voice=Voice(distinct_opening_words=3))
+    assert problems == ['opener starts like a recent one: "running a small"']
+
+
+def test_grade_is_flesch_kincaid():
+    assert grade("The cat sat on the mat.") < 2
+    assert grade("Institutional responsibilities accumulate continuously.") > 15
+
+
+def test_the_example_voice_file_loads_and_its_templates_pass():
+    voice = load_voice(EXAMPLE)
+    values = {"founded": {"year": "2009"}, "years": {"years": "15"},
+              "specialty": {"specialty": "bookkeeping for restaurants and cafes"},
+              "award": {"award": "best bookkeeper in Cedar Hollow 2025", "verb": "voted"}}
+    for kind, templates in voice.templates.items():
+        fact = {"id": "f1", "kind": kind, "value": values[kind],
+                "quote": "Harbor Ledger Co. %s" % " ".join(str(v) for v in values[kind].values())}
+        for t in templates:
+            ctx = {"company": "Harbor Ledger Co.", "city": "Cedar Hollow", **values[kind]}
+            ctx.update({k + "_cap": str(v)[:1].upper() + str(v)[1:] for k, v in values[kind].items()})
+            text = t.format(**ctx)
+            assert check_opener(text, voice=voice, cited=[fact], company="Harbor Ledger Co.",
+                                market="Cedar Hollow, OR", first_name="Dana") == [], text
+
+
+def test_unknown_voice_keys_are_rejected(tmp_path):
+    p = tmp_path / "voice.toml"
+    p.write_text("max_characters = 200\nmax_lenght = 3\n")
+    with pytest.raises(ValueError, match="max_lenght"):
+        load_voice(p)
+
+
+def test_a_first_name_inside_the_company_name_is_not_the_greeting():
+    fact = {**FOUNDED, "quote": "Dana's Books opened in 2009."}
+    problems = check_opener("Dana's Books has been at it since 2009.", voice=VOICE, cited=[fact],
+                            company="Dana's Books", first_name="Dana")
+    assert problems == []
